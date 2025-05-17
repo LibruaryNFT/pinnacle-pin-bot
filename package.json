@@ -1,0 +1,38 @@
+{
+  "name": "pinnacle-pin-bot",
+  "version": "1.0.0",
+  "description": "A bot for monitoring and tweeting Pinnacle NFT sales on Flow blockchain",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LibruaryNFT/pinnacle-pin-bot.git"
+  },
+  "keywords": [
+    "flow",
+    "blockchain",
+    "nft",
+    "pinnacle",
+    "monitoring",
+    "twitter"
+  ],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/LibruaryNFT/pinnacle-pin-bot/issues"
+  },
+  "homepage": "https://github.com/LibruaryNFT/pinnacle-pin-bot#readme",
+  "dependencies": {
+    "@onflow/fcl": "^1.17.0",
+    "axios": "^1.9.0",
+    "dotenv": "^16.4.7",
+    "fcl-subscribe": "^0.1.9",
+    "mongodb": "^6.15.0",
+    "node-cron": "^3.0.3",
+    "twitter-api-v2": "^1.22.0"
+  }
+}
