@@ -169,7 +169,7 @@ async function handlePinnacleEvent(
   providedSeller = null
 ) {
   const {
-    nftId,
+    nftID: nftId,
     nftType,
     salePrice,
     commissionAmount,
