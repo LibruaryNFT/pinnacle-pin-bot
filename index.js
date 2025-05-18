@@ -1,116 +1,48 @@
-// index.js (root) - Added Debug Log Status
-// ... (require statements, client initialization - same as before) ...
-const { subscribeToEvents } = require("fcl-subscribe");
-const { handleEvent, processTestBlock } = require("./handlers");
-const { fcl } = require("./flow");
-const config = require("./config");
-const { verifyCredentials } = require("./twitterClients");
+// index.js  (root)
+require("dotenv").config();
+const fcl = require("@onflow/fcl");
+const { log } = require("./lib/logger");
+const cfg = require("./config");
+const { handleListing } = require("./lib/eventProcessor");
+const { getEvents } = require("./flow"); // you already have this helper
 
-let lastBlockHeight = 0;
+/* ─── CLI ────────────────────────────────────── */
+const args = process.argv.slice(2);
+const opts = { mode: "prod", blockHeight: null, dryRun: cfg.TWITTER_DRY_RUN };
 
-// Add block monitoring function
-async function monitorBlocks() {
-  try {
-    const latestBlock = await fcl.send([fcl.getBlock()]).then(fcl.decode);
-    const currentHeight = latestBlock.height;
+args.forEach((a) => {
+  if (a.startsWith("--mode=")) opts.mode = a.split("=")[1];
+  if (a.startsWith("--blockheight="))
+    opts.blockHeight = Number(a.split("=")[1]);
+  if (a === "--dry-run") opts.dryRun = true;
+});
 
-    if (lastBlockHeight === 0) {
-      lastBlockHeight = currentHeight;
-    }
+/* ─── Common init ───────────────────────────── */
+fcl.config().put("accessNode.api", cfg.ACCESS_API);
 
-    console.log(`Monitoring Blocks: ${lastBlockHeight} - ${currentHeight}`);
-    lastBlockHeight = currentHeight;
-  } catch (error) {
-    console.error("Error getting latest block:", error);
-  }
-}
-
-function parseCommandLineArgs() {
-  const args = process.argv.slice(2);
-  const options = {
-    mode: "production",
-    blockHeight: null,
-  };
-
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg.startsWith("--mode=")) {
-      options.mode = arg.split("=")[1];
-    } else if (arg.startsWith("--blockheight=")) {
-      options.blockHeight = parseInt(arg.split("=")[1]);
-    }
-  }
-
-  return options;
-}
-
-async function main() {
-  const options = parseCommandLineArgs();
-
-  if (options.mode === "test") {
-    if (!options.blockHeight) {
-      console.error(
-        "Block height is required in test mode. Use --blockheight=<number>"
-      );
+(async () => {
+  if (opts.mode === "test") {
+    if (!opts.blockHeight) {
+      console.error("Test mode requires --blockheight");
       process.exit(1);
     }
-    await processTestBlock(options.blockHeight);
+    log("info", `=== Testing block ${opts.blockHeight} ===`);
+    const events = await getEvents(opts.blockHeight, opts.blockHeight);
+    for (const ev of events) await handleListing(ev, { isDryRun: true });
+    log("info", "=== Test complete ===");
   } else {
-    // Production mode - start listening for events
-    console.log("Starting in production mode...");
-    console.log("=== Pinnacle NFT Event Monitor ===");
-    console.log(`FLOW Access Node: ${config.FLOW_ACCESS_NODE}`);
-    console.log("-------- Monitor Status --------");
-    console.log(
-      `Event Logging: ${config.DEBUG_LOG_ALL_EVENTS ? "ENABLED" : "DISABLED"}`
-    );
-    console.log("\n-------- Price Thresholds (USD) --------");
-    console.log(`Pinnacle Bot: > $${config.PINNACLE_PRICE_THRESHOLD}`);
-    console.log("\n-------- Monitored Contracts --------");
-    console.log("NFTStorefrontV2: 0x4eb8a10cb9f87357");
-    console.log("----------------------------------------\n");
-
-    // Verify Twitter credentials
-    const twitterVerified = await verifyCredentials();
-    if (!twitterVerified) {
-      console.error(
-        "Failed to verify Twitter credentials. Please check your configuration."
-      );
-      process.exit(1);
-    }
-
-    console.log("----------------------------------------");
-    console.log("Monitoring Pinnacle NFT Events:");
-    console.log("- NFTStorefrontV2.ListingCompleted");
-    console.log("----------------------------------------\n");
-
-    // Start block monitoring
-    console.log("Starting block monitoring...");
-    await monitorBlocks();
-
-    // Set up interval for continuous monitoring
-    const monitoringInterval = setInterval(async () => {
-      await monitorBlocks();
-    }, 2000);
-
-    // Clean up interval on exit
-    process.on("SIGINT", () => {
-      clearInterval(monitoringInterval);
-      process.exit();
-    });
-
-    subscribeToEvents({
-      fcl,
-      events: ["A.4eb8a10cb9f87357.NFTStorefrontV2.ListingCompleted"],
-      onEvent: handleEvent,
-      onError: (err) => console.error("Subscription error:", err),
-    });
-
-    console.log(
-      "Event subscription started. Waiting for Pinnacle NFT events..."
-    );
+    // ---- production stream (poll 1 block at a time) ----
+    let last = (await fcl.block(true)).height;
+    log("info", `Starting live monitor from block ${last + 1}`);
+    // simple poll; replace with gRPC subscribe if you prefer
+    setInterval(async () => {
+      const current = (await fcl.block(true)).height;
+      if (current > last) {
+        const events = await getEvents(last + 1, current);
+        for (const ev of events)
+          await handleListing(ev, { isDryRun: opts.dryRun });
+        last = current;
+      }
+    }, 3000);
   }
-}
-
-// Run the main function
-main().catch(console.error);
+})();

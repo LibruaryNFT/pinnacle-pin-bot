@@ -1,4 +1,4 @@
-// config.js – Pinnacle Bot Configuration
+// config.js – Pinnacle Bot Configuration (merged)
 // ----------------------------------------------------------------------------
 require("dotenv").config();
 
@@ -17,14 +17,20 @@ if (missing.length) {
   process.exit(1);
 }
 
-/* ── user-tunable polling knobs (NOT from .env) ──────────────────────────── */
+/* ── user-tunable polling knobs (NOT from .env) ─────────────────────────── */
 const POLL_INTERVAL_MS = 2000; // 2 s between block queries
-const VERBOSE_IDLE = false; // true → print heartbeat when no new blocks
+const VERBOSE_IDLE = false; // true → print heartbeat when idle
 
-/* ── price / debug settings ──────────────────────────────────────────────── */
-const PINNACLE_PRICE_THRESHOLD = 50; // USD
+/* ── price / debug settings ─────────────────────────────────────────────── */
+const PINNACLE_PRICE_THRESHOLD = 50; // USD minimum
 const DEBUG_LOG_ALL_EVENTS = process.env.DEBUG_LOG_ALL_EVENTS === "true";
 
+/* ── NEW constants expected by refactor ─────────────────────────────────── */
+const PINNACLE_NFT_TYPE = "A.edf9df96c92f4595.Pinnacle.NFT"; // single source of truth
+const LOG_LEVEL = process.env.LOG_LEVEL || "info";
+const TWITTER_DRY_RUN = process.env.TWITTER_DRY_RUN === "true";
+
+/* ── exports ────────────────────────────────────────────────────────────── */
 module.exports = {
   /* Flow endpoints */
   FLOW_ACCESS_NODE:
@@ -37,9 +43,11 @@ module.exports = {
   POLL_INTERVAL_MS,
   VERBOSE_IDLE,
 
-  /* Pinnacle NFT contracts */
+  /* Pinnacle NFT contracts & types */
   PINNACLE_CONTRACT: "0x4eb8a10cb9f87357",
   NFT_STOREFRONT_CONTRACT: "0x4eb8a10cb9f87357",
+  PINNACLE_NFT_TYPE, // <── used by eventProcessor.js
+  PINNACLE_PRICE_THRESHOLD, // <── same as before
 
   /* Event types */
   EVENT_TYPES: {
@@ -52,9 +60,10 @@ module.exports = {
   PINNACLEPINBOT_ACCESS_TOKEN: process.env.PINNACLEPINBOT_ACCESS_TOKEN,
   PINNACLEPINBOT_ACCESS_SECRET: process.env.PINNACLEPINBOT_ACCESS_SECRET,
 
-  /* Price threshold */
-  PINNACLE_PRICE_THRESHOLD,
-
   /* Flow network */
   FLOW_NETWORK: process.env.FLOW_NETWORK || "mainnet",
+
+  /* NEW behaviour toggles */
+  LOG_LEVEL, // <── consumed by lib/logger.js
+  TWITTER_DRY_RUN, // <── lets you run prod in “no-tweet” mode
 };
