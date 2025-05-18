@@ -40,6 +40,9 @@ const config = {
   ENABLE_TWEETS: true, // Set to true to enable actual tweeting
 };
 
+/* ── Image Cache ────────────────────────────────────────── */
+const fetchedRenderIDs = new Set();
+
 /* ── Logger ─────────────────────────────────────────────── */
 function log(type, message, data = {}) {
   const timestamp = new Date().toISOString();
@@ -313,11 +316,39 @@ async function handleListing(evt) {
       // Try original image first
       let mediaId;
       try {
+        // Skip if we've already fetched this renderID in this session
+        const renderID = ed.renderID;
+        if (fetchedRenderIDs.has(renderID)) {
+          log(
+            "info",
+            "Skipping image fetch - already fetched in this session",
+            { renderID }
+          );
+          return;
+        }
+        fetchedRenderIDs.add(renderID);
+
+        // Throttle the request
+        await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
+
         log("info", "Attempting to download original image", { url: imgUrl });
-        const imageResponse = await fetch(imgUrl);
+        const imageResponse = await fetch(imgUrl, {
+          headers: {
+            "User-Agent": "Mozilla/5.0 (compatible; PinnacleBot/1.0)",
+            Referer: "https://disneypinnacle.com/",
+          },
+        });
+
+        // Check MIME type before proceeding
+        const contentType = imageResponse.headers.get("content-type");
+        if (!contentType?.startsWith("image/")) {
+          log("warn", "Invalid content type for image", { contentType });
+          throw new Error("Invalid content type");
+        }
+
         log("info", "Original image response", {
           status: imageResponse.status,
-          contentType: imageResponse.headers.get("content-type"),
+          contentType: contentType,
           contentLength: imageResponse.headers.get("content-length"),
         });
         const imageBuffer = await imageResponse.buffer();
@@ -332,13 +363,32 @@ async function handleListing(evt) {
         // If original fails, try cropped version
         try {
           const croppedUrl = imgUrl.replace("front.png", "front_cropped.png");
+
+          // Throttle the request
+          await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
+
           log("info", "Attempting to download cropped image", {
             url: croppedUrl,
           });
-          const imageResponse = await fetch(croppedUrl);
+          const imageResponse = await fetch(croppedUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; PinnacleBot/1.0)",
+              Referer: "https://disneypinnacle.com/",
+            },
+          });
+
+          // Check MIME type before proceeding
+          const contentType = imageResponse.headers.get("content-type");
+          if (!contentType?.startsWith("image/")) {
+            log("warn", "Invalid content type for cropped image", {
+              contentType,
+            });
+            throw new Error("Invalid content type");
+          }
+
           log("info", "Cropped image response", {
             status: imageResponse.status,
-            contentType: imageResponse.headers.get("content-type"),
+            contentType: contentType,
             contentLength: imageResponse.headers.get("content-length"),
           });
           const imageBuffer = await imageResponse.buffer();
