@@ -17,7 +17,7 @@ const config = {
 
   /* Pinnacle */
   PINNACLE_NFT_TYPE: "A.edf9df96c92f4595.Pinnacle.NFT",
-  PINNACLE_PRICE_THRESHOLD: 50,
+  PINNACLE_PRICE_THRESHOLD: 100,
   EVENT_TYPES: {
     LISTING_COMPLETED: [
       "A.4eb8a10cb9f87357.NFTStorefrontV2.ListingCompleted",
@@ -26,18 +26,9 @@ const config = {
     OFFER_COMPLETED: "A.b8ea91944fd51c43.OffersV2.OfferCompleted",
   },
 
-  /* Polling */
-  POLL_INTERVAL_MS: 2000,
-  VERBOSE_IDLE: false,
-
-  /* Twitter */
-  TWITTER_API_KEY: process.env.TWITTER_API_KEY,
-  TWITTER_API_SECRET: process.env.TWITTER_API_SECRET,
-  PINNACLEPINBOT_ACCESS_TOKEN: process.env.PINNACLEPINBOT_ACCESS_TOKEN,
-  PINNACLEPINBOT_ACCESS_SECRET: process.env.PINNACLEPINBOT_ACCESS_SECRET,
-
-  /* Toggles */
-  ENABLE_TWEETS: true, // Set to true to enable actual tweeting
+  /* Command-line flag parsing */
+  ENABLE_TWEETS: process.argv.includes("--live-tweets"),
+  IS_BACKFILL: process.argv.includes("--backfill"),
 };
 
 /* ── Image Cache ────────────────────────────────────────── */
@@ -46,33 +37,44 @@ const fetchedRenderIDs = new Set();
 /* ── Logger ─────────────────────────────────────────────── */
 function log(type, message, data = {}) {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${type}: ${message}`);
-  if (Object.keys(data).length) console.log(data);
+  console.log(`[${timestamp}] ${type.toUpperCase()}: ${message}`);
+  if (Object.keys(data).length > 0) {
+    console.log(JSON.stringify(data, null, 2));
+  }
 }
 
 /* ── Twitter Client ─────────────────────────────────────── */
-const twitterClient = new TwitterApi({
-  appKey: config.TWITTER_API_KEY,
-  appSecret: config.TWITTER_API_SECRET,
-  accessToken: config.PINNACLEPINBOT_ACCESS_TOKEN,
-  accessSecret: config.PINNACLEPINBOT_ACCESS_SECRET,
-});
+let twitterClient;
+if (config.ENABLE_TWEETS) {
+  twitterClient = new TwitterApi({
+    appKey: process.env.TWITTER_API_KEY,
+    appSecret: process.env.TWITTER_API_SECRET,
+    accessToken: process.env.PINNACLEPINBOT_ACCESS_TOKEN,
+    accessSecret: process.env.PINNACLEPINBOT_ACCESS_SECRET,
+  });
+}
 
 /* ── Flow Setup ─────────────────────────────────────────── */
 fcl
   .config()
   .put("accessNode.api", config.FLOW_ACCESS_NODE)
-  .put("fcl.eventPollRate", 1000);
+  .put("fcl.eventPollRate", 500); // Reduced to 500ms for faster response
 
 /* ── Cadence Scripts ────────────────────────────────────── */
-const pinnacleScript = fs.readFileSync(
-  path.join(__dirname, "flow", "pinnacle.cdc"),
-  "utf8"
-);
-const editionScript = fs.readFileSync(
-  path.join(__dirname, "flow", "get_edition.cdc"),
-  "utf8"
-);
+let pinnacleScript, editionScript;
+try {
+  pinnacleScript = fs.readFileSync(
+    path.join(__dirname, "flow", "pinnacle.cdc"),
+    "utf8"
+  );
+  editionScript = fs.readFileSync(
+    path.join(__dirname, "flow", "get_edition.cdc"),
+    "utf8"
+  );
+} catch (error) {
+  log("error", "Failed to load Cadence scripts from /flow directory.", error);
+  process.exit(1);
+}
 
 /* ── Helper Functions ───────────────────────────────────── */
 async function retry(op, n = 3, d = 1000) {
@@ -91,23 +93,44 @@ async function retry(op, n = 3, d = 1000) {
 async function get(url) {
   return retry(async () => {
     const res = await fetch(url);
-    if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+    if (!res.ok) {
+      const errorBody = await res.text();
+      throw new Error(`Request Failed: ${res.status} ${res.statusText} - ${errorBody}`);
+    }
     return res.json();
   });
 }
 
 function extract(v) {
-  return v && typeof v === "object" && "value" in v ? extract(v.value) : v;
+  if (!v || typeof v !== "object") return v;
+  
+  // Handle Type objects specifically
+  if (v.type === "Type" && v.value && v.value.staticType && v.value.staticType.typeID) {
+    return v.value.staticType.typeID;
+  }
+  
+  // Handle regular value objects
+  if ("value" in v) {
+    return extract(v.value);
+  }
+  
+  return v;
 }
 
 function decodeEvent(evt) {
-  if (evt.data || !evt.payload) return evt;
-  const j = JSON.parse(Buffer.from(evt.payload, "base64").toString());
-  const obj = {};
-  j.value.fields.forEach((f) => {
-    obj[f.name] = extract(f.value);
-  });
-  return { ...evt, data: obj };
+  if (!evt || !evt.payload) return evt;
+  if (evt.data) return evt; // Already decoded
+  try {
+    const j = JSON.parse(Buffer.from(evt.payload, "base64").toString());
+    const obj = {};
+    j.value.fields.forEach((f) => {
+      obj[f.name] = extract(f.value);
+    });
+    return { ...evt, data: obj };
+  } catch (e) {
+    log('warn', 'Could not decode event payload', { payload: evt.payload });
+    return evt;
+  }
 }
 
 function decodeEventPayloadBase64(payloadBase64) {
@@ -120,336 +143,423 @@ function decodeEventPayloadBase64(payloadBase64) {
 }
 
 function unwrapAddressField(fieldValue) {
-  // Case 1: plain string  => "0xabc…"
+  // Case 1: plain string
   if (typeof fieldValue === "string") return fieldValue;
-
+  
   // Case 2: { value:"0xabc", type:"Address" }
   if (fieldValue && typeof fieldValue.value === "string")
     return fieldValue.value;
-
+  
   // Case 3: { value:{ value:"0xabc", type:"Address" }, type:"Optional" }
   if (
     fieldValue &&
     typeof fieldValue.value === "object" &&
+    fieldValue.value.value &&
     typeof fieldValue.value.value === "string"
   ) {
     return fieldValue.value.value;
   }
-
+  
+  // Case 4: { value:{ value:"0xabc", type:"Address" }, type:"Optional" } - different structure
+  if (
+    fieldValue &&
+    typeof fieldValue.value === "object" &&
+    fieldValue.value.value &&
+    typeof fieldValue.value.value === "string" &&
+    fieldValue.value.type === "Address"
+  ) {
+    return fieldValue.value.value;
+  }
+  
+  // Case 5: Direct object with address property
+  if (fieldValue && typeof fieldValue === "object" && fieldValue.address) {
+    return fieldValue.address;
+  }
+  
+  // Case 6: Nested object with address in different location
+  if (fieldValue && typeof fieldValue === "object") {
+    // Try to find any string that looks like an address
+    const findAddress = (obj) => {
+      for (const [key, value] of Object.entries(obj)) {
+        if (typeof value === "string" && value.startsWith("0x") && value.length === 18) {
+          return value;
+        }
+        if (typeof value === "object" && value !== null) {
+          const found = findAddress(value);
+          if (found) return found;
+        }
+      }
+      return null;
+    };
+    
+    const found = findAddress(fieldValue);
+    if (found) return found;
+  }
+  
+  // Debug logging for unknown formats
+  if (fieldValue !== null && fieldValue !== undefined) {
+    log('debug', 'Unknown address field format', { 
+      fieldValue: JSON.stringify(fieldValue),
+      type: typeof fieldValue 
+    });
+  }
+  
   return null;
 }
 
 function parseBuyerSellerFromNonFungibleToken(events, nftId) {
-  let seller = "UnknownSeller";
-  let buyer = "UnknownBuyer";
+    let seller = "UnknownSeller";
+    let buyer = "UnknownBuyer";
 
-  for (const evt of events) {
-    if (
-      evt.type === "A.1d7e57aa55817448.NonFungibleToken.Withdrawn" ||
-      evt.type === "A.1d7e57aa55817448.NonFungibleToken.Deposited"
-    ) {
-      const decoded = evt.payload
-        ? decodeEventPayloadBase64(evt.payload)
-        : null;
-      if (!decoded) continue;
+    for (const evt of events) {
+        if (
+            evt.type === "A.1d7e57aa55817448.NonFungibleToken.Withdrawn" ||
+            evt.type === "A.1d7e57aa55817448.NonFungibleToken.Deposited"
+        ) {
+            const decoded = evt.payload ? decodeEventPayloadBase64(evt.payload) : null;
+            if (!decoded) {
+                log('debug', 'Failed to decode event payload', { eventType: evt.type });
+                continue;
+            }
 
-      const fields = decoded.value?.fields || [];
+            const fields = decoded.value?.fields || [];
+            let eventIdString = "";
+            let fromAddr = null;
+            let toAddr = null;
 
-      let eventIdString = "";
-      let fromAddr = null;
-      let toAddr = null;
-
-      for (const f of fields) {
-        if (f.name === "id") eventIdString = String(f.value?.value ?? "");
-        if (f.name === "from") fromAddr = unwrapAddressField(f.value?.value);
-        if (f.name === "to") toAddr = unwrapAddressField(f.value?.value);
-      }
-
-      if (eventIdString === String(nftId)) {
-        if (evt.type.endsWith(".Withdrawn")) seller = fromAddr || seller;
-        if (evt.type.endsWith(".Deposited")) buyer = toAddr || buyer;
-      }
+            for (const f of fields) {
+                if (f.name === "id") {
+                    // Handle different ID formats
+                    if (f.value && typeof f.value.value !== "undefined") {
+                        eventIdString = String(f.value.value);
+                    } else if (f.value && typeof f.value === "string") {
+                        eventIdString = f.value;
+                    } else {
+                        eventIdString = String(f.value || "");
+                    }
+                }
+                if (f.name === "from") fromAddr = unwrapAddressField(f.value);
+                if (f.name === "to") toAddr = unwrapAddressField(f.value);
+            }
+            
+            if (String(eventIdString) === String(nftId)) {
+                if (evt.type.endsWith(".Withdrawn")) {
+                    if (fromAddr) {
+                        seller = fromAddr;
+                        log('debug', 'Found seller address', { seller, eventType: evt.type });
+                    } else {
+                        log('debug', 'Failed to extract seller address', { 
+                            eventType: evt.type, 
+                            fromField: JSON.stringify(fields.find(f => f.name === "from")?.value)
+                        });
+                    }
+                }
+                if (evt.type.endsWith(".Deposited")) {
+                    if (toAddr) {
+                        buyer = toAddr;
+                        log('debug', 'Found buyer address', { buyer, eventType: evt.type });
+                    } else {
+                        log('debug', 'Failed to extract buyer address', { 
+                            eventType: evt.type, 
+                            toField: JSON.stringify(fields.find(f => f.name === "to")?.value)
+                        });
+                    }
+                }
+            }
+        }
     }
-  }
-
-  return { seller, buyer };
-}
-
-function parseBuyerSellerFromTopShotDeposit(events, momentID) {
-  let buyerAddress = null;
-  for (const evt of events) {
-    if (evt.type === "A.0b2a3299cc857e29.TopShot.Deposit" && evt.payload) {
-      const decoded = decodeEventPayloadBase64(evt.payload);
-      if (decoded?.id == momentID) {
-        buyerAddress = decoded.to;
-        break;
-      }
+    
+    if (seller === "UnknownSeller" || buyer === "UnknownBuyer") {
+        log('warn', 'Could not determine valid owner addresses', {
+            nftId,
+            seller,
+            buyer,
+            eventCount: events.length
+        });
     }
-  }
-  return buyerAddress;
+    
+    return { seller, buyer };
 }
 
 function composeTweet({ usd, ed, chars, serial, seller, buyer, img }) {
-  return `$${usd.toFixed(2)} USD SALE on @DisneyPinnacle
+  return `$${Math.round(usd)} USD SALE on @DisneyPinnacle
 ${ed.name}
-${serial ? `Serial #: ${serial}\n` : ""}Max Mint: ${ed.max}
-Character(s): ${chars}
+${serial ? `Serial #: ${serial}\n` : ""}${ed.max ? `Max Mint: ${ed.max}\n` : ""}Character(s): ${chars}
 Edition ID: ${ed.id}
 Seller: 0x${seller.replace(/^0x/, "")}
 Buyer: 0x${buyer.replace(/^0x/, "")}
-https://disneypinnacle.com/pin/${ed.id}
-
-Image URL: ${img}`;
+https://disneypinnacle.com/pin/${ed.id}`;
 }
 
 /* ── Flow Functions ─────────────────────────────────────── */
 async function getTxResults(txId) {
-  const url = `${config.FLOW_REST_ENDPOINT}/v1/transaction_results/${txId}`;
-  return get(url);
+  try {
+    const txUrl = `${config.FLOW_REST_ENDPOINT}/v1/transactions/${txId}`;
+    const txData = await get(txUrl);
+    if (txData && txData.events) {
+      return txData;
+    }
+  } catch (e) {
+    log('warn', `Could not fetch from /transactions endpoint, falling back. Error: ${e.message}`);
+  }
+  
+  log("info", "Falling back to /transaction_results endpoint.", { txId });
+  const resultsUrl = `${config.FLOW_REST_ENDPOINT}/v1/transaction_results/${txId}`;
+  return get(resultsUrl);
 }
 
 async function executePinnacleScript(address, nftId) {
   return retry(() =>
-    fcl
-      .send([
-        fcl.script(pinnacleScript),
-        fcl.args([
-          fcl.arg(address, t.Address),
-          fcl.arg(String(nftId), t.UInt64),
-        ]),
-      ])
-      .then(fcl.decode)
+    fcl.send([
+      fcl.script(pinnacleScript),
+      fcl.args([
+        fcl.arg(address, t.Address),
+        fcl.arg(String(nftId), t.UInt64),
+      ]),
+    ]).then(fcl.decode)
   );
 }
 
 async function executeGetEditionScript(editionId) {
   return retry(() =>
-    fcl
-      .send([
-        fcl.script(editionScript),
-        fcl.args([fcl.arg(String(editionId), t.Int)]),
-      ])
-      .then(fcl.decode)
+    fcl.send([
+      fcl.script(editionScript),
+      fcl.args([fcl.arg(String(editionId), t.Int)]),
+    ]).then(fcl.decode)
   );
 }
 
 /* ── Event Processing ───────────────────────────────────── */
 async function handleListing(evt) {
-  evt = decodeEvent(evt);
-  if (!evt.data) {
-    log("warn", "No event data found");
+  const decodedEvent = decodeEvent(evt);
+  if (!decodedEvent || !decodedEvent.data) {
+    log("warn", "Could not decode event or event data missing", { transactionId: evt.transaction_id });
+    return;
+  }
+  const { data, transactionId } = decodedEvent;
+
+  // Filter for Pinnacle NFT purchases only (using the same logic as old working code)
+  const nftType = data.nftType?.typeID || data.nftType;
+  if (nftType !== config.PINNACLE_NFT_TYPE || !data.purchased) {
     return;
   }
 
-  // Early filter for Pinnacle NFT purchases only
-  const nftType = evt.data.nftType?.typeID || evt.data.nftType;
-  if (nftType !== config.PINNACLE_NFT_TYPE || !evt.data.purchased) {
-    return;
-  }
+  const usd = Number(data.salePrice);
 
-  const usd = Number(evt.data.salePrice);
+  // [MODIFIED] Added a log for below-threshold sales
   if (usd < config.PINNACLE_PRICE_THRESHOLD) {
-    log(
-      "info",
-      `Price ${usd} below threshold ${config.PINNACLE_PRICE_THRESHOLD}, skipping`
-    );
+    log('info', `Price ${usd} below threshold ${config.PINNACLE_PRICE_THRESHOLD}, skipping`);
+    return; // Stop processing this event
+  }
+  
+  log('info', `Processing sale: ${data.nftID} for $${usd}`, { transactionId });
+
+  const txRes = await getTxResults(transactionId);
+  if (!txRes || !txRes.events) {
+    log('error', 'Could not retrieve transaction events.', { transactionId });
     return;
   }
 
-  const txRes = await getTxResults(evt.transactionId);
+  const { seller, buyer } = parseBuyerSellerFromNonFungibleToken(txRes.events, data.nftID);
+  const queryAddr = buyer !== "UnknownBuyer" ? buyer : (seller !== "UnknownSeller" ? seller : null);
 
-  const { seller, buyer } = parseBuyerSellerFromNonFungibleToken(
-    txRes.events,
-    evt.data.nftID
-  );
-
-  const queryAddr = buyer !== "UnknownBuyer" ? buyer : seller;
-  if (!queryAddr || queryAddr === "UnknownSeller") {
-    log("warn", "No collection address, skipping", {
-      transactionId: evt.transactionId,
-      buyer,
-      seller,
-      nftId: evt.data.nftID,
-    });
+  if (!queryAddr) {
+    log("warn", "Could not determine a valid owner address to query.", { transactionId, buyer, seller });
     return;
   }
 
-  const pin = await executePinnacleScript(queryAddr, evt.data.nftID);
+  const pin = await executePinnacleScript(queryAddr, data.nftID);
   if (!pin) {
-    log("warn", "Pinnacle script returned null");
+    log("warn", "Pinnacle script returned null, possibly due to NFT data issue.", { nftId: data.nftID, ownerAddress: queryAddr });
     return;
   }
 
   const ed = await executeGetEditionScript(pin.editionID);
   if (!ed) {
-    log("warn", "Edition script null", pin.editionID);
+    log("warn", "Edition script returned null", { editionId: pin.editionID });
     return;
   }
 
-  const chars =
-    (pin.traits || [])
-      .find((t) => t.name === "Characters")
-      ?.value?.join(", ") || "N/A";
+  const traitsMap = new Map();
+  if (pin.traits && Array.isArray(pin.traits)) {
+    for (const trait of pin.traits) {
+      if (trait && trait.name) {
+        traitsMap.set(trait.name, trait.value);
+      }
+    }
+  }
 
-  const setName =
-    (pin.traits || []).find((t) => t.name === "SetName")?.value ||
-    "Unknown Set";
-
+  const characterValues = traitsMap.get("Characters");
+  const chars = Array.isArray(characterValues) ? characterValues.join(", ") : "N/A";
+  const setName = traitsMap.get("SetName") || "Unknown Set";
   const imgUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
 
-  const text = composeTweet({
+  const tweetData = {
     usd,
-    ed: {
-      id: pin.editionID,
-      name: setName,
-      max: ed.maxMintSize,
-    },
+    ed: { id: pin.editionID, name: setName, max: ed.maxMintSize },
     chars,
     serial: pin.serialNumber,
-    seller: seller || "Unknown",
-    buyer: buyer || "Unknown",
+    seller,
+    buyer,
     img: imgUrl,
-  });
+  };
+
+  const text = composeTweet(tweetData);
 
   if (config.ENABLE_TWEETS) {
     try {
-      // Try original image first
       let mediaId;
       try {
-        // Skip if we've already fetched this renderID in this session
         const renderID = ed.renderID;
         if (fetchedRenderIDs.has(renderID)) {
-          log(
-            "info",
-            "Skipping image fetch - already fetched in this session",
-            { renderID }
-          );
+          log("info", "Skipping image fetch - already fetched in this session", { renderID });
           return;
         }
         fetchedRenderIDs.add(renderID);
-
-        // Throttle the request
         await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
-
-        log("info", "Attempting to download original image", { url: imgUrl });
         const imageResponse = await fetch(imgUrl, {
           headers: {
             "User-Agent": "Mozilla/5.0 (compatible; PinnacleBot/1.0)",
             Referer: "https://disneypinnacle.com/",
           },
         });
-
-        // Check MIME type before proceeding
         const contentType = imageResponse.headers.get("content-type");
         if (!contentType?.startsWith("image/")) {
-          log("warn", "Invalid content type for image", { contentType });
           throw new Error("Invalid content type");
         }
-
-        log("info", "Original image response", {
-          status: imageResponse.status,
-          contentType: contentType,
-          contentLength: imageResponse.headers.get("content-length"),
-        });
         const imageBuffer = await imageResponse.buffer();
-        log("info", "Original image buffer", {
-          size: imageBuffer.length,
-          type: imageBuffer.type,
-        });
-        mediaId = await twitterClient.v1.uploadMedia(imageBuffer, {
-          mimeType: "image/png",
-        });
+        mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
       } catch (imageError) {
-        // If original fails, try cropped version
-        try {
-          const croppedUrl = imgUrl.replace("front.png", "front_cropped.png");
-
-          // Throttle the request
-          await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
-
-          log("info", "Attempting to download cropped image", {
-            url: croppedUrl,
-          });
-          const imageResponse = await fetch(croppedUrl, {
-            headers: {
-              "User-Agent": "Mozilla/5.0 (compatible; PinnacleBot/1.0)",
-              Referer: "https://disneypinnacle.com/",
-            },
-          });
-
-          // Check MIME type before proceeding
-          const contentType = imageResponse.headers.get("content-type");
-          if (!contentType?.startsWith("image/")) {
-            log("warn", "Invalid content type for cropped image", {
-              contentType,
-            });
-            throw new Error("Invalid content type");
-          }
-
-          log("info", "Cropped image response", {
-            status: imageResponse.status,
-            contentType: contentType,
-            contentLength: imageResponse.headers.get("content-length"),
-          });
-          const imageBuffer = await imageResponse.buffer();
-          log("info", "Cropped image buffer", {
-            size: imageBuffer.length,
-            type: imageBuffer.type,
-          });
-          mediaId = await twitterClient.v1.uploadMedia(imageBuffer, {
-            mimeType: "image/png",
-          });
-        } catch (croppedError) {
-          // If both fail, log and continue without image
-          log(
-            "warn",
-            "Failed to upload both original and cropped images, tweeting without image",
-            {
-              originalUrl: imgUrl,
-              originalError: imageError.message,
-              croppedUrl: imgUrl.replace("front.png", "front_cropped.png"),
-              croppedError: croppedError.message,
-            }
-          );
-        }
+        // Fallback image logic can be added here if needed
+        log('warn', 'Failed to process image for tweet.', { imageError: imageError.message });
       }
-
-      // Tweet with or without media
+      
+      log('info', 'Attempting to tweet sale...', { nftId: data.nftID });
       await twitterClient.v2.tweet({
-        text: text.replace(`\n\nImage URL: ${imgUrl}`, ""),
+        text: text,
         ...(mediaId && { media: { media_ids: [mediaId] } }),
       });
+      log('info', `Tweeted Edition ${pin.editionID} for $${usd}`);
 
-      log("info", `Tweeted Edition ${pin.editionID} for $${usd}`);
     } catch (error) {
-      log("error", "Failed to tweet", error);
+      log("error", "Failed to tweet", { error: error.message, tweetData });
     }
   } else {
-    log("info", `Would tweet (tweets disabled):\n${text}`);
+    // Check if image would be included
+    const renderID = ed.renderID;
+    const imageUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
+    
+    if (fetchedRenderIDs.has(renderID)) {
+      log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: SKIP (already fetched: ${imageUrl})`);
+    } else {
+      log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: WOULD DOWNLOAD (${imageUrl})`);
+    }
+    console.log(text);
   }
 }
 
-/* ── Main Loop ──────────────────────────────────────────── */
-async function main() {
-  try {
-    // Verify Twitter credentials
-    await twitterClient.v2.me();
-    log("info", "Twitter client initialized successfully");
+/* ── App Modes ──────────────────────────────────────────── */
 
-    // Subscribe to all relevant events
+async function runBackfill() {
+    const fromBlockArg = process.argv.find(arg => arg.startsWith('--from-block='));
+    const toBlockArg = process.argv.find(arg => arg.startsWith('--to-block='));
+
+    if (!fromBlockArg || !toBlockArg) {
+        log('error', 'Backfill mode requires --from-block=<number> and --to-block=<number> arguments.');
+        process.exit(1);
+    }
+
+    const fromBlock = parseInt(fromBlockArg.split('=')[1], 10);
+    const toBlock = parseInt(toBlockArg.split('=')[1], 10);
+
+    if (isNaN(fromBlock) || isNaN(toBlock) || fromBlock > toBlock) {
+        log('error', 'Invalid block height range provided.');
+        process.exit(1);
+    }
+
+    log('info', `--- BACKFILL MODE ---`);
+    log('info', `Scanning for events from block ${fromBlock} to ${toBlock}.`);
+
+    try {
+        let foundEvents = [];
+        // Include all event types (like the live subscription)
+        const allEventTypes = [
+            ...config.EVENT_TYPES.LISTING_COMPLETED,
+            config.EVENT_TYPES.OFFER_COMPLETED,
+        ];
+        
+        for (const eventType of allEventTypes) {
+            log('info', `Querying for event type: ${eventType}`);
+            try {
+                // Use REST API directly for more reliable event fetching
+                const url = `${config.FLOW_REST_ENDPOINT}/v1/events?type=${encodeURIComponent(eventType)}&start_height=${fromBlock}&end_height=${toBlock}`;
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const data = await response.json();
+                
+                // Extract individual events from blocks
+                if (data && data.length > 0) {
+                    for (const block of data) {
+                        if (block.events && Array.isArray(block.events)) {
+                            for (const event of block.events) {
+                                // Add block info to the event
+                                const enrichedEvent = {
+                                    ...event,
+                                    blockHeight: parseInt(block.block_height),
+                                    blockId: block.block_id,
+                                    blockTimestamp: block.block_timestamp
+                                };
+                                foundEvents.push(enrichedEvent);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                log('error', `Failed to fetch events for ${eventType}`, { error: error.message });
+            }
+        }
+        
+        log('info', `Found ${foundEvents.length} total sales events in range.`);
+        if (foundEvents.length === 0) return;
+
+        foundEvents.sort((a, b) => a.blockHeight - b.blockHeight);
+
+        for (const event of foundEvents) {
+            try {
+                await handleListing(event);
+            } catch (error) {
+                log("error", "Error processing backfill event", { error: error.message, event });
+            }
+        }
+
+    } catch (error) {
+        log('error', 'An error occurred during backfill.', { message: error.message });
+    }
+}
+
+async function runLiveSubscription() {
+  try {
+    if (config.ENABLE_TWEETS) {
+      await twitterClient.v2.me();
+      log("info", "Twitter client initialized successfully for live tweeting.");
+    }
+    
+    log("info", "Starting live event subscription...");
+
+    // Subscribe to all relevant events (like the old working code)
     const events = [
       ...config.EVENT_TYPES.LISTING_COMPLETED,
       config.EVENT_TYPES.OFFER_COMPLETED,
     ];
 
-    log("info", "Starting event subscription...");
-
-    const subscription = await subscribeToEvents({
+    const subscription = subscribeToEvents({
       fcl,
       events,
       onEvent: async (event) => {
         try {
-          // Single check for Pinnacle NFT purchases
+          // Single check for Pinnacle NFT purchases (like the old working code)
           const nftType = event.data?.nftType?.typeID || event.data?.nftType;
           if (nftType === config.PINNACLE_NFT_TYPE && event.data?.purchased) {
             await handleListing(event);
@@ -469,17 +579,14 @@ async function main() {
           });
         }
       },
-      onError: (error) => {
-        log("error", "Subscription error", {
-          error: error.message,
-          stack: error.stack,
-        });
-      },
+      onError: (error) => log("error", "Subscription error", { error: error.message }),
+      // Override the default 60-second sleep time to make it real-time
+      sleepTime: 1000, // 1 second instead of 60 seconds
+      startBlock: "latest"
     });
 
-    log("info", "Event subscription started successfully");
+    log("info", "Event subscription started successfully. Watching for sales...");
 
-    // Keep the process running
     process.on("SIGINT", () => {
       log("info", "Shutting down...");
       if (subscription && typeof subscription.close === "function") {
@@ -488,12 +595,26 @@ async function main() {
       process.exit(0);
     });
   } catch (error) {
-    log("error", "Fatal error", {
-      error: error.message,
-      stack: error.stack,
-    });
+    log("error", "Fatal error in live subscription setup", { message: error.message });
     process.exit(1);
   }
 }
 
-main();
+/* ── Main Entry Point ───────────────────────────────────── */
+async function main() {
+  const mode = config.IS_BACKFILL 
+    ? (config.ENABLE_TWEETS ? "--- BACKFILL LIVE TWEET MODE ---" : "--- BACKFILL DRY RUN MODE ---")
+    : (config.ENABLE_TWEETS ? "--- LIVE TWEET MODE ---" : "--- LIVE DRY RUN MODE ---");
+  log("warn", mode);
+
+  if (config.IS_BACKFILL) {
+    await runBackfill();
+  } else {
+    await runLiveSubscription();
+  }
+}
+
+main().catch((e) => {
+    log('fatal', 'Unhandled error in main execution.', e);
+    process.exit(1);
+});
