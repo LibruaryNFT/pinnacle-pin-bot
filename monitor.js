@@ -7,6 +7,20 @@ const path = require("path");
 const { TwitterApi } = require("twitter-api-v2");
 const { subscribeToEvents } = require("fcl-subscribe");
 
+/* ── File Logging Setup ─────────────────────────────────── */
+// Create log file with timestamp
+const logFileName = `pinnacle-bot-${new Date().toISOString().split('T')[0]}.log`;
+const logFilePath = path.join(__dirname, logFileName);
+
+// Function to write to log file
+function writeToLogFile(message) {
+  try {
+    fs.appendFileSync(logFilePath, message + '\n');
+  } catch (error) {
+    // Silently fail if we can't write to log file
+  }
+}
+
 /* ── Config ─────────────────────────────────────────────── */
 const config = {
   /* Flow */
@@ -17,7 +31,7 @@ const config = {
 
   /* Pinnacle */
   PINNACLE_NFT_TYPE: "A.edf9df96c92f4595.Pinnacle.NFT",
-  PINNACLE_PRICE_THRESHOLD: 100,
+  PINNACLE_PRICE_THRESHOLD: 200,
   EVENT_TYPES: {
     LISTING_COMPLETED: [
       "A.4eb8a10cb9f87357.NFTStorefrontV2.ListingCompleted",
@@ -32,14 +46,24 @@ const config = {
 };
 
 /* ── Image Cache ────────────────────────────────────────── */
-const fetchedRenderIDs = new Set();
+// Removed caching to ensure images are always included in tweets
 
 /* ── Logger ─────────────────────────────────────────────── */
 function log(type, message, data = {}) {
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] ${type.toUpperCase()}: ${message}`);
+  const logMessage = `[${timestamp}] ${type.toUpperCase()}: ${message}`;
+  
+  // Console output
+  console.log(logMessage);
   if (Object.keys(data).length > 0) {
-    console.log(JSON.stringify(data, null, 2));
+    const dataMessage = JSON.stringify(data, null, 2);
+    console.log(dataMessage);
+  }
+  
+  // File output
+  writeToLogFile(logMessage);
+  if (Object.keys(data).length > 0) {
+    writeToLogFile(JSON.stringify(data, null, 2));
   }
 }
 
@@ -354,9 +378,35 @@ async function handleListing(evt) {
   
   log('info', `Processing sale: ${data.nftID} for $${usd}`, { transactionId });
 
-  const txRes = await getTxResults(transactionId);
-  if (!txRes || !txRes.events) {
-    log('error', 'Could not retrieve transaction events.', { transactionId });
+  // Retry transaction results with exponential backoff for timing issues
+  let txRes = null;
+  let retryCount = 0;
+  const maxRetries = 3;
+  
+  while (retryCount < maxRetries) {
+    txRes = await getTxResults(transactionId);
+    
+    if (txRes && txRes.events && txRes.events.length > 0) {
+      break; // Success - we got events
+    }
+    
+    retryCount++;
+    if (retryCount < maxRetries) {
+      const delay = Math.pow(2, retryCount) * 1000; // 2s, 4s, 8s
+      log('warn', `Transaction events not ready, retrying in ${delay}ms (attempt ${retryCount}/${maxRetries})`, { 
+        transactionId, 
+        eventCount: txRes?.events?.length || 0 
+      });
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  if (!txRes || !txRes.events || txRes.events.length === 0) {
+    log('error', 'Could not retrieve transaction events after retries.', { 
+      transactionId, 
+      attempts: retryCount,
+      eventCount: txRes?.events?.length || 0 
+    });
     return;
   }
 
@@ -373,12 +423,25 @@ async function handleListing(evt) {
     log("warn", "Pinnacle script returned null, possibly due to NFT data issue.", { nftId: data.nftID, ownerAddress: queryAddr });
     return;
   }
+  
+  log('debug', 'Pinnacle script executed successfully', { 
+    nftId: data.nftID, 
+    editionId: pin.editionID,
+    serialNumber: pin.serialNumber,
+    traitsCount: pin.traits?.length || 0
+  });
 
   const ed = await executeGetEditionScript(pin.editionID);
   if (!ed) {
     log("warn", "Edition script returned null", { editionId: pin.editionID });
     return;
   }
+  
+  log('debug', 'Edition script executed successfully', { 
+    editionId: pin.editionID,
+    renderID: ed.renderID,
+    maxMintSize: ed.maxMintSize
+  });
 
   const traitsMap = new Map();
   if (pin.traits && Array.isArray(pin.traits)) {
@@ -405,17 +468,20 @@ async function handleListing(evt) {
   };
 
   const text = composeTweet(tweetData);
+  
+  log('debug', 'Tweet composed successfully', { 
+    nftId: data.nftID,
+    editionId: pin.editionID,
+    tweetLength: text.length,
+    hasImage: !!imgUrl
+  });
 
   if (config.ENABLE_TWEETS) {
     try {
       let mediaId;
       try {
         const renderID = ed.renderID;
-        if (fetchedRenderIDs.has(renderID)) {
-          log("info", "Skipping image fetch - already fetched in this session", { renderID });
-          return;
-        }
-        fetchedRenderIDs.add(renderID);
+        log("info", "Downloading image for tweet", { renderID });
         await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
         const imageResponse = await fetch(imgUrl, {
           headers: {
@@ -429,6 +495,7 @@ async function handleListing(evt) {
         }
         const imageBuffer = await imageResponse.buffer();
         mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
+        log("info", "Image uploaded successfully", { renderID, mediaId });
       } catch (imageError) {
         // Fallback image logic can be added here if needed
         log('warn', 'Failed to process image for tweet.', { imageError: imageError.message });
@@ -449,12 +516,9 @@ async function handleListing(evt) {
     const renderID = ed.renderID;
     const imageUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
     
-    if (fetchedRenderIDs.has(renderID)) {
-      log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: SKIP (already fetched: ${imageUrl})`);
-    } else {
-      log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: WOULD DOWNLOAD (${imageUrl})`);
-    }
+    log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: WOULD DOWNLOAD (${imageUrl})`);
     console.log(text);
+    writeToLogFile(text);
   }
 }
 
