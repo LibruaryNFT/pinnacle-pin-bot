@@ -305,13 +305,33 @@ function parseBuyerSellerFromNonFungibleToken(events, nftId) {
     return { seller, buyer };
 }
 
+async function getUsernameFromAddress(address) {
+  try {
+    const url = `https://open.meetdapper.com/profile?address=${address}`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      log('warn', `Failed to fetch username for address ${address}`, { status: response.status });
+      return null;
+    }
+    const data = await response.json();
+    return data.displayName || null;
+  } catch (error) {
+    log('warn', `Error fetching username for address ${address}`, { error: error.message });
+    return null;
+  }
+}
+
+function formatPrice(price) {
+  return Math.round(price).toLocaleString();
+}
+
 function composeTweet({ usd, ed, chars, serial, seller, buyer, img }) {
-  return `$${Math.round(usd)} USD SALE on @DisneyPinnacle
+  return `$${formatPrice(usd)} USD SALE on @DisneyPinnacle
 ${ed.name}
 ${serial ? `Serial #: ${serial}\n` : ""}${ed.max ? `Max Mint: ${ed.max}\n` : ""}Character(s): ${chars}
 Edition ID: ${ed.id}
-Seller: 0x${seller.replace(/^0x/, "")}
-Buyer: 0x${buyer.replace(/^0x/, "")}
+Seller: ${seller}
+Buyer: ${buyer}
 https://disneypinnacle.com/pin/${ed.id}`;
 }
 
@@ -457,13 +477,27 @@ async function handleListing(evt) {
   const setName = traitsMap.get("SetName") || "Unknown Set";
   const imgUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
 
+  // Fetch usernames for seller and buyer
+  let sellerDisplay = seller;
+  let buyerDisplay = buyer;
+  
+  if (seller !== "UnknownSeller") {
+    const sellerUsername = await getUsernameFromAddress(seller);
+    sellerDisplay = sellerUsername || `0x${seller.replace(/^0x/, "")}`;
+  }
+  
+  if (buyer !== "UnknownBuyer") {
+    const buyerUsername = await getUsernameFromAddress(buyer);
+    buyerDisplay = buyerUsername || `0x${buyer.replace(/^0x/, "")}`;
+  }
+
   const tweetData = {
     usd,
     ed: { id: pin.editionID, name: setName, max: ed.maxMintSize },
     chars,
     serial: pin.serialNumber,
-    seller,
-    buyer,
+    seller: sellerDisplay,
+    buyer: buyerDisplay,
     img: imgUrl,
   };
 
