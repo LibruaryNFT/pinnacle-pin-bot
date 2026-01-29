@@ -9,13 +9,13 @@ const { subscribeToEvents } = require("fcl-subscribe");
 
 /* ── File Logging Setup ─────────────────────────────────── */
 // Create log file with timestamp
-const logFileName = `pinnacle-bot-${new Date().toISOString().split('T')[0]}.log`;
+const logFileName = `pinnacle-bot-${new Date().toISOString().split("T")[0]}.log`;
 const logFilePath = path.join(__dirname, logFileName);
 
 // Function to write to log file
 function writeToLogFile(message) {
   try {
-    fs.appendFileSync(logFilePath, message + '\n');
+    fs.appendFileSync(logFilePath, message + "\n");
   } catch (error) {
     // Silently fail if we can't write to log file
   }
@@ -24,10 +24,8 @@ function writeToLogFile(message) {
 /* ── Config ─────────────────────────────────────────────── */
 const config = {
   /* Flow */
-  FLOW_ACCESS_NODE:
-    process.env.FLOW_ACCESS_NODE || "https://mainnet.onflow.org",
-  FLOW_REST_ENDPOINT:
-    process.env.FLOW_REST_ENDPOINT || "https://rest-mainnet.onflow.org",
+  FLOW_ACCESS_NODE: process.env.FLOW_ACCESS_NODE || "https://mainnet.onflow.org",
+  FLOW_REST_ENDPOINT: process.env.FLOW_REST_ENDPOINT || "https://rest-mainnet.onflow.org",
 
   /* Pinnacle */
   PINNACLE_NFT_TYPE: "A.edf9df96c92f4595.Pinnacle.NFT",
@@ -52,14 +50,14 @@ const config = {
 function log(type, message, data = {}) {
   const timestamp = new Date().toISOString();
   const logMessage = `[${timestamp}] ${type.toUpperCase()}: ${message}`;
-  
+
   // Console output
   console.log(logMessage);
   if (Object.keys(data).length > 0) {
     const dataMessage = JSON.stringify(data, null, 2);
     console.log(dataMessage);
   }
-  
+
   // File output
   writeToLogFile(logMessage);
   if (Object.keys(data).length > 0) {
@@ -78,23 +76,79 @@ if (config.ENABLE_TWEETS) {
   });
 }
 
+/* ── Tweet Throttle (separate tweets, enforced 60s gap + jitter) ──
+   - Never batches tweets.
+   - Serializes posting so two tweets can’t fire in the same second.
+   - Gap = TWEET_GAP_SECONDS (default 60) + random(0..TWEET_JITTER_SECONDS) (default 20).
+*/
+const TWEET_GAP_SECONDS = Number(process.env.TWEET_GAP_SECONDS || 60);
+const TWEET_JITTER_SECONDS = Number(process.env.TWEET_JITTER_SECONDS || 20);
+
+const TWEET_GAP_MS = Math.max(0, TWEET_GAP_SECONDS) * 1000;
+const TWEET_JITTER_MS = Math.max(0, TWEET_JITTER_SECONDS) * 1000;
+
+let lastTweetAtMs = 0;
+let tweetWorkerRunning = false;
+const tweetQueue = []; // [{ job: async () => void, resolve: () => void }]
+
+function nextDelayMs() {
+  const jitter = TWEET_JITTER_MS ? Math.floor(Math.random() * (TWEET_JITTER_MS + 1)) : 0;
+  return TWEET_GAP_MS + jitter;
+}
+
+function enqueueTweet(job) {
+  return new Promise((resolve) => {
+    tweetQueue.push({ job, resolve });
+    void processTweetQueue();
+  });
+}
+
+async function processTweetQueue() {
+  if (tweetWorkerRunning) return;
+  tweetWorkerRunning = true;
+
+  try {
+    while (tweetQueue.length > 0) {
+      const { job, resolve } = tweetQueue.shift();
+
+      // Enforce minimum spacing between tweet attempts
+      if (lastTweetAtMs) {
+        const required = nextDelayMs();
+        const waitMs = lastTweetAtMs + required - Date.now();
+        if (waitMs > 0) {
+          log("info", "Tweet throttle waiting", {
+            waitMs,
+            queueDepth: tweetQueue.length,
+            gapSeconds: TWEET_GAP_SECONDS,
+            jitterSeconds: TWEET_JITTER_SECONDS,
+          });
+          await new Promise((r) => setTimeout(r, waitMs));
+        }
+      }
+
+      try {
+        await job();
+      } catch (e) {
+        log("error", "Tweet job failed (caught by queue)", { error: e?.message || String(e) });
+      } finally {
+        // Update after each attempt so we never rapid-fire even on errors
+        lastTweetAtMs = Date.now();
+        resolve();
+      }
+    }
+  } finally {
+    tweetWorkerRunning = false;
+  }
+}
+
 /* ── Flow Setup ─────────────────────────────────────────── */
-fcl
-  .config()
-  .put("accessNode.api", config.FLOW_ACCESS_NODE)
-  .put("fcl.eventPollRate", 500); // Reduced to 500ms for faster response
+fcl.config().put("accessNode.api", config.FLOW_ACCESS_NODE).put("fcl.eventPollRate", 500); // Reduced to 500ms for faster response
 
 /* ── Cadence Scripts ────────────────────────────────────── */
 let pinnacleScript, editionScript;
 try {
-  pinnacleScript = fs.readFileSync(
-    path.join(__dirname, "flow", "pinnacle.cdc"),
-    "utf8"
-  );
-  editionScript = fs.readFileSync(
-    path.join(__dirname, "flow", "get_edition.cdc"),
-    "utf8"
-  );
+  pinnacleScript = fs.readFileSync(path.join(__dirname, "flow", "pinnacle.cdc"), "utf8");
+  editionScript = fs.readFileSync(path.join(__dirname, "flow", "get_edition.cdc"), "utf8");
 } catch (error) {
   log("error", "Failed to load Cadence scripts from /flow directory.", error);
   process.exit(1);
@@ -127,17 +181,17 @@ async function get(url) {
 
 function extract(v) {
   if (!v || typeof v !== "object") return v;
-  
+
   // Handle Type objects specifically
   if (v.type === "Type" && v.value && v.value.staticType && v.value.staticType.typeID) {
     return v.value.staticType.typeID;
   }
-  
+
   // Handle regular value objects
   if ("value" in v) {
     return extract(v.value);
   }
-  
+
   return v;
 }
 
@@ -152,7 +206,7 @@ function decodeEvent(evt) {
     });
     return { ...evt, data: obj };
   } catch (e) {
-    log('warn', 'Could not decode event payload', { payload: evt.payload });
+    log("warn", "Could not decode event payload", { payload: evt.payload });
     return evt;
   }
 }
@@ -169,11 +223,10 @@ function decodeEventPayloadBase64(payloadBase64) {
 function unwrapAddressField(fieldValue) {
   // Case 1: plain string
   if (typeof fieldValue === "string") return fieldValue;
-  
+
   // Case 2: { value:"0xabc", type:"Address" }
-  if (fieldValue && typeof fieldValue.value === "string")
-    return fieldValue.value;
-  
+  if (fieldValue && typeof fieldValue.value === "string") return fieldValue.value;
+
   // Case 3: { value:{ value:"0xabc", type:"Address" }, type:"Optional" }
   if (
     fieldValue &&
@@ -183,7 +236,7 @@ function unwrapAddressField(fieldValue) {
   ) {
     return fieldValue.value.value;
   }
-  
+
   // Case 4: { value:{ value:"0xabc", type:"Address" }, type:"Optional" } - different structure
   if (
     fieldValue &&
@@ -194,12 +247,12 @@ function unwrapAddressField(fieldValue) {
   ) {
     return fieldValue.value.value;
   }
-  
+
   // Case 5: Direct object with address property
   if (fieldValue && typeof fieldValue === "object" && fieldValue.address) {
     return fieldValue.address;
   }
-  
+
   // Case 6: Nested object with address in different location
   if (fieldValue && typeof fieldValue === "object") {
     // Try to find any string that looks like an address
@@ -215,94 +268,94 @@ function unwrapAddressField(fieldValue) {
       }
       return null;
     };
-    
+
     const found = findAddress(fieldValue);
     if (found) return found;
   }
-  
+
   // Debug logging for unknown formats
   if (fieldValue !== null && fieldValue !== undefined) {
-    log('debug', 'Unknown address field format', { 
+    log("debug", "Unknown address field format", {
       fieldValue: JSON.stringify(fieldValue),
-      type: typeof fieldValue 
+      type: typeof fieldValue,
     });
   }
-  
+
   return null;
 }
 
 function parseBuyerSellerFromNonFungibleToken(events, nftId) {
-    let seller = "UnknownSeller";
-    let buyer = "UnknownBuyer";
+  let seller = "UnknownSeller";
+  let buyer = "UnknownBuyer";
 
-    for (const evt of events) {
-        if (
-            evt.type === "A.1d7e57aa55817448.NonFungibleToken.Withdrawn" ||
-            evt.type === "A.1d7e57aa55817448.NonFungibleToken.Deposited"
-        ) {
-            const decoded = evt.payload ? decodeEventPayloadBase64(evt.payload) : null;
-            if (!decoded) {
-                log('debug', 'Failed to decode event payload', { eventType: evt.type });
-                continue;
-            }
+  for (const evt of events) {
+    if (
+      evt.type === "A.1d7e57aa55817448.NonFungibleToken.Withdrawn" ||
+      evt.type === "A.1d7e57aa55817448.NonFungibleToken.Deposited"
+    ) {
+      const decoded = evt.payload ? decodeEventPayloadBase64(evt.payload) : null;
+      if (!decoded) {
+        log("debug", "Failed to decode event payload", { eventType: evt.type });
+        continue;
+      }
 
-            const fields = decoded.value?.fields || [];
-            let eventIdString = "";
-            let fromAddr = null;
-            let toAddr = null;
+      const fields = decoded.value?.fields || [];
+      let eventIdString = "";
+      let fromAddr = null;
+      let toAddr = null;
 
-            for (const f of fields) {
-                if (f.name === "id") {
-                    // Handle different ID formats
-                    if (f.value && typeof f.value.value !== "undefined") {
-                        eventIdString = String(f.value.value);
-                    } else if (f.value && typeof f.value === "string") {
-                        eventIdString = f.value;
-                    } else {
-                        eventIdString = String(f.value || "");
-                    }
-                }
-                if (f.name === "from") fromAddr = unwrapAddressField(f.value);
-                if (f.name === "to") toAddr = unwrapAddressField(f.value);
-            }
-            
-            if (String(eventIdString) === String(nftId)) {
-                if (evt.type.endsWith(".Withdrawn")) {
-                    if (fromAddr) {
-                        seller = fromAddr;
-                        log('debug', 'Found seller address', { seller, eventType: evt.type });
-                    } else {
-                        log('debug', 'Failed to extract seller address', { 
-                            eventType: evt.type, 
-                            fromField: JSON.stringify(fields.find(f => f.name === "from")?.value)
-                        });
-                    }
-                }
-                if (evt.type.endsWith(".Deposited")) {
-                    if (toAddr) {
-                        buyer = toAddr;
-                        log('debug', 'Found buyer address', { buyer, eventType: evt.type });
-                    } else {
-                        log('debug', 'Failed to extract buyer address', { 
-                            eventType: evt.type, 
-                            toField: JSON.stringify(fields.find(f => f.name === "to")?.value)
-                        });
-                    }
-                }
-            }
+      for (const f of fields) {
+        if (f.name === "id") {
+          // Handle different ID formats
+          if (f.value && typeof f.value.value !== "undefined") {
+            eventIdString = String(f.value.value);
+          } else if (f.value && typeof f.value === "string") {
+            eventIdString = f.value;
+          } else {
+            eventIdString = String(f.value || "");
+          }
         }
+        if (f.name === "from") fromAddr = unwrapAddressField(f.value);
+        if (f.name === "to") toAddr = unwrapAddressField(f.value);
+      }
+
+      if (String(eventIdString) === String(nftId)) {
+        if (evt.type.endsWith(".Withdrawn")) {
+          if (fromAddr) {
+            seller = fromAddr;
+            log("debug", "Found seller address", { seller, eventType: evt.type });
+          } else {
+            log("debug", "Failed to extract seller address", {
+              eventType: evt.type,
+              fromField: JSON.stringify(fields.find((f) => f.name === "from")?.value),
+            });
+          }
+        }
+        if (evt.type.endsWith(".Deposited")) {
+          if (toAddr) {
+            buyer = toAddr;
+            log("debug", "Found buyer address", { buyer, eventType: evt.type });
+          } else {
+            log("debug", "Failed to extract buyer address", {
+              eventType: evt.type,
+              toField: JSON.stringify(fields.find((f) => f.name === "to")?.value),
+            });
+          }
+        }
+      }
     }
-    
-    if (seller === "UnknownSeller" || buyer === "UnknownBuyer") {
-        log('warn', 'Could not determine valid owner addresses', {
-            nftId,
-            seller,
-            buyer,
-            eventCount: events.length
-        });
-    }
-    
-    return { seller, buyer };
+  }
+
+  if (seller === "UnknownSeller" || buyer === "UnknownBuyer") {
+    log("warn", "Could not determine valid owner addresses", {
+      nftId,
+      seller,
+      buyer,
+      eventCount: events.length,
+    });
+  }
+
+  return { seller, buyer };
 }
 
 async function getUsernameFromAddress(address) {
@@ -310,13 +363,13 @@ async function getUsernameFromAddress(address) {
     const url = `https://open.meetdapper.com/profile?address=${address}`;
     const response = await fetch(url);
     if (!response.ok) {
-      log('warn', `Failed to fetch username for address ${address}`, { status: response.status });
+      log("warn", `Failed to fetch username for address ${address}`, { status: response.status });
       return null;
     }
     const data = await response.json();
     return data.displayName || null;
   } catch (error) {
-    log('warn', `Error fetching username for address ${address}`, { error: error.message });
+    log("warn", `Error fetching username for address ${address}`, { error: error.message });
     return null;
   }
 }
@@ -344,9 +397,9 @@ async function getTxResults(txId) {
       return txData;
     }
   } catch (e) {
-    log('warn', `Could not fetch from /transactions endpoint, falling back. Error: ${e.message}`);
+    log("warn", `Could not fetch from /transactions endpoint, falling back. Error: ${e.message}`);
   }
-  
+
   log("info", "Falling back to /transaction_results endpoint.", { txId });
   const resultsUrl = `${config.FLOW_REST_ENDPOINT}/v1/transaction_results/${txId}`;
   return get(resultsUrl);
@@ -354,22 +407,20 @@ async function getTxResults(txId) {
 
 async function executePinnacleScript(address, nftId) {
   return retry(() =>
-    fcl.send([
-      fcl.script(pinnacleScript),
-      fcl.args([
-        fcl.arg(address, t.Address),
-        fcl.arg(String(nftId), t.UInt64),
-      ]),
-    ]).then(fcl.decode)
+    fcl
+      .send([
+        fcl.script(pinnacleScript),
+        fcl.args([fcl.arg(address, t.Address), fcl.arg(String(nftId), t.UInt64)]),
+      ])
+      .then(fcl.decode)
   );
 }
 
 async function executeGetEditionScript(editionId) {
   return retry(() =>
-    fcl.send([
-      fcl.script(editionScript),
-      fcl.args([fcl.arg(String(editionId), t.Int)]),
-    ]).then(fcl.decode)
+    fcl
+      .send([fcl.script(editionScript), fcl.args([fcl.arg(String(editionId), t.Int)])])
+      .then(fcl.decode)
   );
 }
 
@@ -392,46 +443,46 @@ async function handleListing(evt) {
 
   // [MODIFIED] Added a log for below-threshold sales
   if (usd < config.PINNACLE_PRICE_THRESHOLD) {
-    log('info', `Price ${usd} below threshold ${config.PINNACLE_PRICE_THRESHOLD}, skipping`);
+    log("info", `Price ${usd} below threshold ${config.PINNACLE_PRICE_THRESHOLD}, skipping`);
     return; // Stop processing this event
   }
-  
-  log('info', `Processing sale: ${data.nftID} for $${usd}`, { transactionId });
+
+  log("info", `Processing sale: ${data.nftID} for $${usd}`, { transactionId });
 
   // Retry transaction results with exponential backoff for timing issues
   let txRes = null;
   let retryCount = 0;
   const maxRetries = 3;
-  
+
   while (retryCount < maxRetries) {
     txRes = await getTxResults(transactionId);
-    
+
     if (txRes && txRes.events && txRes.events.length > 0) {
       break; // Success - we got events
     }
-    
+
     retryCount++;
     if (retryCount < maxRetries) {
       const delay = Math.pow(2, retryCount) * 1000; // 2s, 4s, 8s
-      log('warn', `Transaction events not ready, retrying in ${delay}ms (attempt ${retryCount}/${maxRetries})`, { 
-        transactionId, 
-        eventCount: txRes?.events?.length || 0 
+      log("warn", `Transaction events not ready, retrying in ${delay}ms (attempt ${retryCount}/${maxRetries})`, {
+        transactionId,
+        eventCount: txRes?.events?.length || 0,
       });
-      await new Promise(resolve => setTimeout(resolve, delay));
+      await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
-  
+
   if (!txRes || !txRes.events || txRes.events.length === 0) {
-    log('error', 'Could not retrieve transaction events after retries.', { 
-      transactionId, 
+    log("error", "Could not retrieve transaction events after retries.", {
+      transactionId,
       attempts: retryCount,
-      eventCount: txRes?.events?.length || 0 
+      eventCount: txRes?.events?.length || 0,
     });
     return;
   }
 
   const { seller, buyer } = parseBuyerSellerFromNonFungibleToken(txRes.events, data.nftID);
-  const queryAddr = buyer !== "UnknownBuyer" ? buyer : (seller !== "UnknownSeller" ? seller : null);
+  const queryAddr = buyer !== "UnknownBuyer" ? buyer : seller !== "UnknownSeller" ? seller : null;
 
   if (!queryAddr) {
     log("warn", "Could not determine a valid owner address to query.", { transactionId, buyer, seller });
@@ -440,15 +491,18 @@ async function handleListing(evt) {
 
   const pin = await executePinnacleScript(queryAddr, data.nftID);
   if (!pin) {
-    log("warn", "Pinnacle script returned null, possibly due to NFT data issue.", { nftId: data.nftID, ownerAddress: queryAddr });
+    log("warn", "Pinnacle script returned null, possibly due to NFT data issue.", {
+      nftId: data.nftID,
+      ownerAddress: queryAddr,
+    });
     return;
   }
-  
-  log('debug', 'Pinnacle script executed successfully', { 
-    nftId: data.nftID, 
+
+  log("debug", "Pinnacle script executed successfully", {
+    nftId: data.nftID,
     editionId: pin.editionID,
     serialNumber: pin.serialNumber,
-    traitsCount: pin.traits?.length || 0
+    traitsCount: pin.traits?.length || 0,
   });
 
   const ed = await executeGetEditionScript(pin.editionID);
@@ -456,19 +510,17 @@ async function handleListing(evt) {
     log("warn", "Edition script returned null", { editionId: pin.editionID });
     return;
   }
-  
-  log('debug', 'Edition script executed successfully', { 
+
+  log("debug", "Edition script executed successfully", {
     editionId: pin.editionID,
     renderID: ed.renderID,
-    maxMintSize: ed.maxMintSize
+    maxMintSize: ed.maxMintSize,
   });
 
   const traitsMap = new Map();
   if (pin.traits && Array.isArray(pin.traits)) {
     for (const trait of pin.traits) {
-      if (trait && trait.name) {
-        traitsMap.set(trait.name, trait.value);
-      }
+      if (trait && trait.name) traitsMap.set(trait.name, trait.value);
     }
   }
 
@@ -480,12 +532,12 @@ async function handleListing(evt) {
   // Fetch usernames for seller and buyer
   let sellerDisplay = seller;
   let buyerDisplay = buyer;
-  
+
   if (seller !== "UnknownSeller") {
     const sellerUsername = await getUsernameFromAddress(seller);
     sellerDisplay = sellerUsername || `0x${seller.replace(/^0x/, "")}`;
   }
-  
+
   if (buyer !== "UnknownBuyer") {
     const buyerUsername = await getUsernameFromAddress(buyer);
     buyerDisplay = buyerUsername || `0x${buyer.replace(/^0x/, "")}`;
@@ -502,54 +554,60 @@ async function handleListing(evt) {
   };
 
   const text = composeTweet(tweetData);
-  
-  log('debug', 'Tweet composed successfully', { 
+
+  log("debug", "Tweet composed successfully", {
     nftId: data.nftID,
     editionId: pin.editionID,
     tweetLength: text.length,
-    hasImage: !!imgUrl
+    hasImage: !!imgUrl,
   });
 
   if (config.ENABLE_TWEETS) {
-    try {
-      let mediaId;
+    const sendPromise = enqueueTweet(async () => {
       try {
-        const renderID = ed.renderID;
-        log("info", "Downloading image for tweet", { renderID });
-        await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
-        const imageResponse = await fetch(imgUrl, {
-          headers: {
-            "User-Agent": "Mozilla/5.0 (compatible; PinnacleBot/1.0)",
-            Referer: "https://disneypinnacle.com/",
-          },
-        });
-        const contentType = imageResponse.headers.get("content-type");
-        if (!contentType?.startsWith("image/")) {
-          throw new Error("Invalid content type");
-        }
-        const imageBuffer = await imageResponse.buffer();
-        mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
-        log("info", "Image uploaded successfully", { renderID, mediaId });
-      } catch (imageError) {
-        // Fallback image logic can be added here if needed
-        log('warn', 'Failed to process image for tweet.', { imageError: imageError.message });
-      }
-      
-      log('info', 'Attempting to tweet sale...', { nftId: data.nftID });
-      await twitterClient.v2.tweet({
-        text: text,
-        ...(mediaId && { media: { media_ids: [mediaId] } }),
-      });
-      log('info', `Tweeted Edition ${pin.editionID} for $${usd}`);
+        let mediaId;
+        try {
+          const renderID = ed.renderID;
+          log("info", "Downloading image for tweet", { renderID });
 
-    } catch (error) {
-      log("error", "Failed to tweet", { error: error.message, tweetData });
-    }
+          await new Promise((r) => setTimeout(r, 300 + Math.random() * 300));
+
+          const imageResponse = await fetch(imgUrl, {
+            headers: {
+              "User-Agent": "Mozilla/5.0 (compatible; PinnacleBot/1.0)",
+              Referer: "https://disneypinnacle.com/",
+            },
+          });
+
+          const contentType = imageResponse.headers.get("content-type");
+          if (!contentType?.startsWith("image/")) throw new Error("Invalid content type");
+
+          const imageBuffer = await imageResponse.buffer();
+          mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
+
+          log("info", "Image uploaded successfully", { renderID, mediaId });
+        } catch (imageError) {
+          log("warn", "Failed to process image for tweet.", { imageError: imageError.message });
+        }
+
+        log("info", "Attempting to tweet sale...", { nftId: data.nftID, queueDepth: tweetQueue.length });
+
+        await twitterClient.v2.tweet({
+          text,
+          ...(mediaId && { media: { media_ids: [mediaId] } }),
+        });
+
+        log("info", `Tweeted Edition ${pin.editionID} for $${usd}`);
+      } catch (error) {
+        log("error", "Failed to tweet", { error: error.message, tweetData });
+      }
+    });
+
+    // In backfill mode, wait so we don't queue thousands instantly
+    if (config.IS_BACKFILL) await sendPromise;
   } else {
     // Check if image would be included
-    const renderID = ed.renderID;
     const imageUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
-    
     log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: WOULD DOWNLOAD (${imageUrl})`);
     console.log(text);
     writeToLogFile(text);
@@ -559,82 +617,77 @@ async function handleListing(evt) {
 /* ── App Modes ──────────────────────────────────────────── */
 
 async function runBackfill() {
-    const fromBlockArg = process.argv.find(arg => arg.startsWith('--from-block='));
-    const toBlockArg = process.argv.find(arg => arg.startsWith('--to-block='));
+  const fromBlockArg = process.argv.find((arg) => arg.startsWith("--from-block="));
+  const toBlockArg = process.argv.find((arg) => arg.startsWith("--to-block="));
 
-    if (!fromBlockArg || !toBlockArg) {
-        log('error', 'Backfill mode requires --from-block=<number> and --to-block=<number> arguments.');
-        process.exit(1);
-    }
+  if (!fromBlockArg || !toBlockArg) {
+    log("error", "Backfill mode requires --from-block=<number> and --to-block=<number> arguments.");
+    process.exit(1);
+  }
 
-    const fromBlock = parseInt(fromBlockArg.split('=')[1], 10);
-    const toBlock = parseInt(toBlockArg.split('=')[1], 10);
+  const fromBlock = parseInt(fromBlockArg.split("=")[1], 10);
+  const toBlock = parseInt(toBlockArg.split("=")[1], 10);
 
-    if (isNaN(fromBlock) || isNaN(toBlock) || fromBlock > toBlock) {
-        log('error', 'Invalid block height range provided.');
-        process.exit(1);
-    }
+  if (isNaN(fromBlock) || isNaN(toBlock) || fromBlock > toBlock) {
+    log("error", "Invalid block height range provided.");
+    process.exit(1);
+  }
 
-    log('info', `--- BACKFILL MODE ---`);
-    log('info', `Scanning for events from block ${fromBlock} to ${toBlock}.`);
+  log("info", `--- BACKFILL MODE ---`);
+  log("info", `Scanning for events from block ${fromBlock} to ${toBlock}.`);
 
-    try {
-        let foundEvents = [];
-        // Include all event types (like the live subscription)
-        const allEventTypes = [
-            ...config.EVENT_TYPES.LISTING_COMPLETED,
-            config.EVENT_TYPES.OFFER_COMPLETED,
-        ];
-        
-        for (const eventType of allEventTypes) {
-            log('info', `Querying for event type: ${eventType}`);
-            try {
-                // Use REST API directly for more reliable event fetching
-                const url = `${config.FLOW_REST_ENDPOINT}/v1/events?type=${encodeURIComponent(eventType)}&start_height=${fromBlock}&end_height=${toBlock}`;
-                const response = await fetch(url);
-                if (!response.ok) {
-                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                }
-                const data = await response.json();
-                
-                // Extract individual events from blocks
-                if (data && data.length > 0) {
-                    for (const block of data) {
-                        if (block.events && Array.isArray(block.events)) {
-                            for (const event of block.events) {
-                                // Add block info to the event
-                                const enrichedEvent = {
-                                    ...event,
-                                    blockHeight: parseInt(block.block_height),
-                                    blockId: block.block_id,
-                                    blockTimestamp: block.block_timestamp
-                                };
-                                foundEvents.push(enrichedEvent);
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                log('error', `Failed to fetch events for ${eventType}`, { error: error.message });
+  try {
+    let foundEvents = [];
+    // Include all event types (like the live subscription)
+    const allEventTypes = [...config.EVENT_TYPES.LISTING_COMPLETED, config.EVENT_TYPES.OFFER_COMPLETED];
+
+    for (const eventType of allEventTypes) {
+      log("info", `Querying for event type: ${eventType}`);
+      try {
+        // Use REST API directly for more reliable event fetching
+        const url = `${config.FLOW_REST_ENDPOINT}/v1/events?type=${encodeURIComponent(
+          eventType
+        )}&start_height=${fromBlock}&end_height=${toBlock}`;
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        const data = await response.json();
+
+        // Extract individual events from blocks
+        if (data && data.length > 0) {
+          for (const block of data) {
+            if (block.events && Array.isArray(block.events)) {
+              for (const event of block.events) {
+                const enrichedEvent = {
+                  ...event,
+                  blockHeight: parseInt(block.block_height),
+                  blockId: block.block_id,
+                  blockTimestamp: block.block_timestamp,
+                };
+                foundEvents.push(enrichedEvent);
+              }
             }
+          }
         }
-        
-        log('info', `Found ${foundEvents.length} total sales events in range.`);
-        if (foundEvents.length === 0) return;
-
-        foundEvents.sort((a, b) => a.blockHeight - b.blockHeight);
-
-        for (const event of foundEvents) {
-            try {
-                await handleListing(event);
-            } catch (error) {
-                log("error", "Error processing backfill event", { error: error.message, event });
-            }
-        }
-
-    } catch (error) {
-        log('error', 'An error occurred during backfill.', { message: error.message });
+      } catch (error) {
+        log("error", `Failed to fetch events for ${eventType}`, { error: error.message });
+      }
     }
+
+    log("info", `Found ${foundEvents.length} total sales events in range.`);
+    if (foundEvents.length === 0) return;
+
+    foundEvents.sort((a, b) => a.blockHeight - b.blockHeight);
+
+    for (const event of foundEvents) {
+      try {
+        await handleListing(event);
+      } catch (error) {
+        log("error", "Error processing backfill event", { error: error.message, event });
+      }
+    }
+  } catch (error) {
+    log("error", "An error occurred during backfill.", { message: error.message });
+  }
 }
 
 async function runLiveSubscription() {
@@ -642,15 +695,16 @@ async function runLiveSubscription() {
     if (config.ENABLE_TWEETS) {
       await twitterClient.v2.me();
       log("info", "Twitter client initialized successfully for live tweeting.");
+      log("info", "Tweet throttle enabled", {
+        gapSeconds: TWEET_GAP_SECONDS,
+        jitterSeconds: TWEET_JITTER_SECONDS,
+      });
     }
-    
+
     log("info", "Starting live event subscription...");
 
     // Subscribe to all relevant events (like the old working code)
-    const events = [
-      ...config.EVENT_TYPES.LISTING_COMPLETED,
-      config.EVENT_TYPES.OFFER_COMPLETED,
-    ];
+    const events = [...config.EVENT_TYPES.LISTING_COMPLETED, config.EVENT_TYPES.OFFER_COMPLETED];
 
     const subscription = subscribeToEvents({
       fcl,
@@ -680,16 +734,14 @@ async function runLiveSubscription() {
       onError: (error) => log("error", "Subscription error", { error: error.message }),
       // Override the default 60-second sleep time to make it real-time
       sleepTime: 1000, // 1 second instead of 60 seconds
-      startBlock: "latest"
+      startBlock: "latest",
     });
 
     log("info", "Event subscription started successfully. Watching for sales...");
 
     process.on("SIGINT", () => {
       log("info", "Shutting down...");
-      if (subscription && typeof subscription.close === "function") {
-        subscription.close();
-      }
+      if (subscription && typeof subscription.close === "function") subscription.close();
       process.exit(0);
     });
   } catch (error) {
@@ -700,9 +752,13 @@ async function runLiveSubscription() {
 
 /* ── Main Entry Point ───────────────────────────────────── */
 async function main() {
-  const mode = config.IS_BACKFILL 
-    ? (config.ENABLE_TWEETS ? "--- BACKFILL LIVE TWEET MODE ---" : "--- BACKFILL DRY RUN MODE ---")
-    : (config.ENABLE_TWEETS ? "--- LIVE TWEET MODE ---" : "--- LIVE DRY RUN MODE ---");
+  const mode = config.IS_BACKFILL
+    ? config.ENABLE_TWEETS
+      ? "--- BACKFILL LIVE TWEET MODE ---"
+      : "--- BACKFILL DRY RUN MODE ---"
+    : config.ENABLE_TWEETS
+    ? "--- LIVE TWEET MODE ---"
+    : "--- LIVE DRY RUN MODE ---";
   log("warn", mode);
 
   if (config.IS_BACKFILL) {
@@ -713,6 +769,6 @@ async function main() {
 }
 
 main().catch((e) => {
-    log('fatal', 'Unhandled error in main execution.', e);
-    process.exit(1);
+  log("fatal", "Unhandled error in main execution.", e);
+  process.exit(1);
 });
