@@ -1,4 +1,5 @@
 require("dotenv").config();
+const http = require("http");
 const fcl = require("@onflow/fcl");
 const fetch = require("node-fetch");
 const t = require("@onflow/types");
@@ -749,6 +750,33 @@ async function runLiveSubscription() {
     process.exit(1);
   }
 }
+
+/* ── Health Check Server ────────────────────────────────── */
+const HEALTH_PORT = Number(process.env.HEALTH_PORT || 8090);
+const botStartTime = Date.now();
+
+http
+  .createServer((req, res) => {
+    if (req.url === "/health" && (req.method === "GET" || req.method === "HEAD")) {
+      const body = JSON.stringify({
+        status: "healthy",
+        service: "pinnacle-pin-bot",
+        uptime: Math.floor((Date.now() - botStartTime) / 1000),
+        mode: config.IS_BACKFILL ? "backfill" : "live",
+        tweetsEnabled: config.ENABLE_TWEETS,
+        tweetQueueDepth: tweetQueue.length,
+        timestamp: new Date().toISOString(),
+      });
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(body);
+    } else {
+      res.writeHead(404);
+      res.end("Not found");
+    }
+  })
+  .listen(HEALTH_PORT, () => {
+    log("info", `Health check server listening on port ${HEALTH_PORT}`);
+  });
 
 /* ── Main Entry Point ───────────────────────────────────── */
 async function main() {
