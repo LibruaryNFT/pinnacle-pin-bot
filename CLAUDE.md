@@ -11,6 +11,9 @@ This project is part of the LibruaryNFT agent network, coordinated by the comman
 | Incident log | `c:\Code\command-center\incidents\log.md` |
 | Cost tracker | `c:\Code\command-center\costs\tracker.md` |
 | Agent registry | `c:\Code\command-center\agents\registry.md` |
+| Conventions | `c:\Code\command-center\CONVENTIONS.md` |
+
+**Bug tracking:** Use `report_bug` MCP tool for cross-repo bugs. Creates SQLite record + event log + optional GitHub Issue.
 
 **Session start:** Read this repo's CLAUDE.md (especially Current Status). Check TODO.md for active tasks.
 
@@ -23,7 +26,7 @@ This project is part of the LibruaryNFT agent network, coordinated by the comman
 
 | Milestone | Status | Notes |
 |-----------|--------|-------|
-| Bot live on GCP VM | Done | systemd service, auto-restart |
+| Bot live on Hetzner VPS (46.225.59.82) | Done | systemd service, auto-restart |
 | Flow event scanning | Done | Pinnacle NFT sales on mainnet |
 | Twitter posting (@PinnaclePinBot) | Done | Twitter API v2 |
 | MongoDB state tracking | Done | |
@@ -41,14 +44,14 @@ Twitter bot that monitors Disney Pinnacle NFT sales on the Flow blockchain and t
 - Twitter API v2 (posting)
 
 ## Infrastructure
-- Runs on GCP VM (us-central1-b) as a systemd service
-- Shares VM with flow-event-listener
-- See `c:\Code\command-center\infrastructure\gcp\vm.md` for VM details
+- Runs on Hetzner VPS (46.225.59.82) as a systemd service
+- Shares VPS with flow-event-listener
+- See `c:\Code\command-center\infrastructure\hetzner\vps.md` for VPS details
 
 ## Deployment
 ```bash
-# SSH to GCP VM
-gcloud compute ssh <VM_NAME> --zone us-central1-b
+# SSH to Hetzner VPS
+ssh -i ~/.ssh/id_ed25519 root@46.225.59.82
 
 # Pull latest and restart
 cd ~/pinnacle-pin-bot
