@@ -128,7 +128,7 @@ Use this script to test the Cadence scripts directly and fetch NFT/edition infor
 # Get NFT details by address and NFT ID
 node scripts/inspect_nft.js pinnacle <ADDRESS> <NFT_ID>
 
-# Get edition details by edition ID  
+# Get edition details by edition ID
 node scripts/inspect_nft.js edition <EDITION_ID>
 ```
 
