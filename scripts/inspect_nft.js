@@ -91,7 +91,7 @@ async function main() {
   console.log("✅ Scripts loaded successfully.");
 
   switch (command) {
-    case "pinnacle":
+    case "pinnacle": {
       if (args.length < 2) {
         console.error("\nError: The 'pinnacle' command requires <address> and <nftID>.");
         showHelp();
@@ -106,8 +106,9 @@ async function main() {
       console.log("\n--- Script Result ---");
       console.log(JSON.stringify(pinnacleResult, null, 2));
       break;
+    }
 
-    case "edition":
+    case "edition": {
       if (args.length < 1) {
         console.error("\nError: The 'edition' command requires an <editionID>.");
         showHelp();
@@ -121,6 +122,7 @@ async function main() {
       console.log("\n--- Script Result ---");
       console.log(JSON.stringify(editionResult, null, 2));
       break;
+    }
 
     default:
       console.log("\nInvalid command.");
