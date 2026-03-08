@@ -2,6 +2,7 @@
 // This version handles cases where events must be fetched from a separate 'transaction_results' endpoint.
 
 const fetch = require("node-fetch");
+const logger = require("../logger");
 
 // Configuration
 const FLOW_REST_ENDPOINT = "https://rest-mainnet.onflow.org";
@@ -17,7 +18,7 @@ function decodePayload(payloadBase64) {
     const jsonString = Buffer.from(payloadBase64, "base64").toString("utf-8");
     return JSON.parse(jsonString);
   } catch (e) {
-    console.error("Failed to decode or parse payload:", e);
+    logger.error({ err: e }, "Failed to decode or parse payload");
     return { error: "Could not decode payload", original: payloadBase64 };
   }
 }
@@ -27,12 +28,12 @@ function decodePayload(payloadBase64) {
  */
 async function inspectTransaction(txId) {
   if (!txId) {
-    console.error("Error: Please provide a transaction ID.");
-    console.log("Usage: node inspect_events.js <YOUR_TRANSACTION_ID>");
+    logger.error("Please provide a transaction ID.");
+    logger.info("Usage: node inspect_events.js <YOUR_TRANSACTION_ID>");
     return;
   }
 
-  console.log(`🔍 Fetching data for transaction: ${txId}\n`);
+  logger.info({ txId }, "Fetching data for transaction");
 
   const initialUrl = `${FLOW_REST_ENDPOINT}/v1/transactions/${txId}`;
 
@@ -48,10 +49,10 @@ async function inspectTransaction(txId) {
 
     // --- STEP 2: Check if events are included. If not, fetch them from the results endpoint. ---
     if (txData.result?.events) {
-      console.log("✅ Events found in initial transaction response.");
+      logger.info("Events found in initial transaction response");
       events = txData.result.events;
     } else {
-      console.log("... Events not in initial response. Fetching from transaction_results endpoint...");
+      logger.info("Events not in initial response, fetching from transaction_results endpoint");
       const resultsUrl = `${FLOW_REST_ENDPOINT}/v1/transaction_results/${txId}`;
       const resultsResponse = await fetch(resultsUrl);
       if (!resultsResponse.ok) {
@@ -62,22 +63,18 @@ async function inspectTransaction(txId) {
     }
 
     if (!events || events.length === 0) {
-      console.log("No events found after checking both endpoints.");
+      logger.info("No events found after checking both endpoints");
       return;
     }
 
-    console.log(`✅ Found ${events.length} events. Decoding payloads:\n`);
+    logger.info({ count: events.length }, "Found events, decoding payloads");
 
     for (const event of events) {
-      console.log("--------------------------------------------------");
-      console.log(`Event Type: ${event.type}`);
-      console.log("--------------------------------------------------");
       const decodedPayload = decodePayload(event.payload);
-      console.log(JSON.stringify(decodedPayload, null, 2));
-      console.log("\n");
+      logger.info({ eventType: event.type, payload: decodedPayload }, "Decoded event");
     }
   } catch (error) {
-    console.error(`An error occurred: ${error.message}`);
+    logger.error({ err: error }, "An error occurred");
   }
 }
 

@@ -7,6 +7,7 @@ const fs = require("fs");
 const path = require("path");
 const { TwitterApi } = require("twitter-api-v2");
 const { subscribeToEvents } = require("fcl-subscribe");
+const logger = require("./logger");
 
 /* ── File Logging Setup ─────────────────────────────────── */
 // Create log file with timestamp
@@ -49,19 +50,21 @@ const config = {
 
 /* ── Logger ─────────────────────────────────────────────── */
 function log(type, message, data = {}) {
-  const timestamp = new Date().toISOString();
-  const logMessage = `[${timestamp}] ${type.toUpperCase()}: ${message}`;
+  const level = type === "fatal" ? "fatal" : type;
+  const hasData = Object.keys(data).length > 0;
 
-  // Console output
-  console.log(logMessage);
-  if (Object.keys(data).length > 0) {
-    const dataMessage = JSON.stringify(data, null, 2);
-    console.log(dataMessage);
+  // Structured logging via Pino
+  if (hasData) {
+    logger[level] ? logger[level](data, message) : logger.info(data, message);
+  } else {
+    logger[level] ? logger[level](message) : logger.info(message);
   }
 
-  // File output
+  // File output (preserved for production log files)
+  const timestamp = new Date().toISOString();
+  const logMessage = `[${timestamp}] ${type.toUpperCase()}: ${message}`;
   writeToLogFile(logMessage);
-  if (Object.keys(data).length > 0) {
+  if (hasData) {
     writeToLogFile(JSON.stringify(data, null, 2));
   }
 }
@@ -610,7 +613,7 @@ async function handleListing(evt) {
     // Check if image would be included
     const imageUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
     log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: WOULD DOWNLOAD (${imageUrl})`);
-    console.log(text);
+    logger.info({ tweetText: text }, "Composed tweet (dry run)");
     writeToLogFile(text);
   }
 }
