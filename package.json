@@ -29,7 +29,7 @@
   "dependencies": {
     "@onflow/fcl": "^1.17.0",
     "axios": "^1.9.0",
-    "dotenv": "^16.4.7",
+    "dotenv": "^17.3.1",
     "fcl-subscribe": "^0.1.9",
     "mongodb": "^6.15.0",
     "node-cron": "^3.0.3",
