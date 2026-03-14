@@ -567,6 +567,8 @@ async function handleListing(evt) {
     buyer: buyerDisplay,
     img: imgUrl,
     editionType: EDITION_TYPE_NAMES[ed.editionTypeID] ?? null,
+    isChaser: !!ed.isChaser,
+    variant: ed.variant || null,
   };
 
   const text = composeTweet(tweetData);
@@ -610,6 +612,8 @@ async function handleListing(evt) {
             seller: sellerDisplay,
             buyer: buyerDisplay,
             nftBuffer,
+            isChaser: tweetData.isChaser,
+            variant: tweetData.variant,
           });
 
           mediaId = await twitterClient.v1.uploadMedia(cardBuffer, { mimeType: "image/png" });
