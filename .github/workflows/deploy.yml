@@ -34,6 +34,7 @@ jobs:
       - name: Deploy
         run: |
           ssh -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} '
+            git config --global --add safe.directory /opt/pinnacle-pin-bot &&
             cd /opt/pinnacle-pin-bot &&
             git pull origin main &&
             chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot &&
