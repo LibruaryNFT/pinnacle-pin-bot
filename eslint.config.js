@@ -30,6 +30,12 @@ module.exports = [
     },
   },
   {
+    files: ["__tests__/**/*.js", "vitest.config.js"],
+    languageOptions: {
+      sourceType: "module",
+    },
+  },
+  {
     ignores: ["node_modules/", "coverage/"],
   },
 ];

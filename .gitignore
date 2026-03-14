@@ -34,3 +34,5 @@ coverage
 # Flow specific
 flow.json
 emulator-account.pkey
+card-mockups.html
+test-card.png

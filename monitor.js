@@ -8,6 +8,7 @@ const path = require("path");
 const { TwitterApi } = require("twitter-api-v2");
 const { subscribeToEvents } = require("fcl-subscribe");
 const logger = require("./logger");
+const { renderSaleCard } = require("./render-card");
 
 /* ── File Logging Setup ─────────────────────────────────── */
 // Create log file with timestamp
@@ -31,7 +32,7 @@ const config = {
 
   /* Pinnacle */
   PINNACLE_NFT_TYPE: "A.edf9df96c92f4595.Pinnacle.NFT",
-  PINNACLE_PRICE_THRESHOLD: 200,
+  PINNACLE_PRICE_THRESHOLD: 150,
   EVENT_TYPES: {
     LISTING_COMPLETED: [
       "A.4eb8a10cb9f87357.NFTStorefrontV2.ListingCompleted",
@@ -43,6 +44,17 @@ const config = {
   /* Command-line flag parsing */
   ENABLE_TWEETS: process.argv.includes("--live-tweets"),
   IS_BACKFILL: process.argv.includes("--backfill"),
+};
+
+/* ── Edition Type Map ───────────────────────────────────── */
+const EDITION_TYPE_NAMES = {
+  1: "Genesis",
+  9: "Legendary",
+  3: "Limited",
+  7: "Ltd Event",
+  8: "Open Event",
+  4: "Open",
+  5: "Starter",
 };
 
 /* ── Image Cache ────────────────────────────────────────── */
@@ -94,6 +106,10 @@ const TWEET_JITTER_MS = Math.max(0, TWEET_JITTER_SECONDS) * 1000;
 let lastTweetAtMs = 0;
 let tweetWorkerRunning = false;
 const tweetQueue = []; // [{ job: async () => void, resolve: () => void }]
+
+let tweetsSent = 0;
+let lastTweetAt = null;
+let lastSaleAttemptedAt = null;
 
 function nextDelayMs() {
   const jitter = TWEET_JITTER_MS ? Math.floor(Math.random() * (TWEET_JITTER_MS + 1)) : 0;
@@ -382,14 +398,8 @@ function formatPrice(price) {
   return Math.round(price).toLocaleString();
 }
 
-function composeTweet({ usd, ed, chars, serial, seller, buyer, img }) {
-  return `$${formatPrice(usd)} USD SALE on @DisneyPinnacle
-${ed.name}
-${serial ? `Serial #: ${serial}\n` : ""}${ed.max ? `Max Mint: ${ed.max}\n` : ""}Character(s): ${chars}
-Edition ID: ${ed.id}
-Seller: ${seller}
-Buyer: ${buyer}
-https://disneypinnacle.com/pin/${ed.id}`;
+function composeTweet({ usd, chars, ed }) {
+  return `$${formatPrice(usd)} — ${chars} just sold on @DisneyPinnacle\nhttps://disneypinnacle.com/pin/${ed.id}`;
 }
 
 /* ── Flow Functions ─────────────────────────────────────── */
@@ -452,6 +462,7 @@ async function handleListing(evt) {
   }
 
   log("info", `Processing sale: ${data.nftID} for $${usd}`, { transactionId });
+  lastSaleAttemptedAt = new Date().toISOString();
 
   // Retry transaction results with exponential backoff for timing issues
   let txRes = null;
@@ -531,7 +542,7 @@ async function handleListing(evt) {
   const characterValues = traitsMap.get("Characters");
   const chars = Array.isArray(characterValues) ? characterValues.join(", ") : "N/A";
   const setName = traitsMap.get("SetName") || "Unknown Set";
-  const imgUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
+  const imgUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front_cropped.png`;
 
   // Fetch usernames for seller and buyer
   let sellerDisplay = seller;
@@ -555,6 +566,7 @@ async function handleListing(evt) {
     seller: sellerDisplay,
     buyer: buyerDisplay,
     img: imgUrl,
+    editionType: EDITION_TYPE_NAMES[ed.editionTypeID] ?? null,
   };
 
   const text = composeTweet(tweetData);
@@ -586,10 +598,23 @@ async function handleListing(evt) {
           const contentType = imageResponse.headers.get("content-type");
           if (!contentType?.startsWith("image/")) throw new Error("Invalid content type");
 
-          const imageBuffer = await imageResponse.buffer();
-          mediaId = await twitterClient.v1.uploadMedia(imageBuffer, { mimeType: "image/png" });
+          const nftBuffer = await imageResponse.buffer();
 
-          log("info", "Image uploaded successfully", { renderID, mediaId });
+          const cardBuffer = await renderSaleCard({
+            usd,
+            character: chars,
+            setName,
+            serial: pin.serialNumber,
+            maxMint: ed.maxMintSize,
+            editionType: tweetData.editionType,
+            seller: sellerDisplay,
+            buyer: buyerDisplay,
+            nftBuffer,
+          });
+
+          mediaId = await twitterClient.v1.uploadMedia(cardBuffer, { mimeType: "image/png" });
+
+          log("info", "Card rendered and uploaded successfully", { renderID, mediaId });
         } catch (imageError) {
           log("warn", "Failed to process image for tweet.", { imageError: imageError.message });
         }
@@ -602,6 +627,8 @@ async function handleListing(evt) {
         });
 
         log("info", `Tweeted Edition ${pin.editionID} for $${usd}`);
+        tweetsSent++;
+        lastTweetAt = new Date().toISOString();
       } catch (error) {
         log("error", "Failed to tweet", { error: error.message, tweetData });
       }
@@ -611,8 +638,7 @@ async function handleListing(evt) {
     if (config.IS_BACKFILL) await sendPromise;
   } else {
     // Check if image would be included
-    const imageUrl = `https://assets.disneypinnacle.com/render/${ed.renderID}/front.png`;
-    log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Image: WOULD DOWNLOAD (${imageUrl})`);
+    log("info", `DRY RUN: Tweet not sent. Use --live-tweets flag to enable. Card: WOULD RENDER (${imgUrl})`);
     logger.info({ tweetText: text }, "Composed tweet (dry run)");
     writeToLogFile(text);
   }
@@ -761,13 +787,22 @@ const botStartTime = Date.now();
 http
   .createServer((req, res) => {
     if (req.url === "/health" && (req.method === "GET" || req.method === "HEAD")) {
+      const saleWithoutTweet =
+        lastSaleAttemptedAt !== null &&
+        (lastTweetAt === null ||
+          new Date(lastSaleAttemptedAt).getTime() > new Date(lastTweetAt).getTime());
+      const uptimeSeconds = Math.floor((Date.now() - botStartTime) / 1000);
+      const silentTooLong = config.ENABLE_TWEETS && lastTweetAt === null && uptimeSeconds > 3600;
       const body = JSON.stringify({
-        status: "healthy",
+        status: saleWithoutTweet || silentTooLong ? "degraded" : "healthy",
         service: "pinnacle-pin-bot",
         uptime: Math.floor((Date.now() - botStartTime) / 1000),
         mode: config.IS_BACKFILL ? "backfill" : "live",
         tweetsEnabled: config.ENABLE_TWEETS,
         tweetQueueDepth: tweetQueue.length,
+        tweetsSent,
+        lastTweetAt,
+        lastSaleAttemptedAt,
         timestamp: new Date().toISOString(),
       });
       res.writeHead(200, { "Content-Type": "application/json" });
