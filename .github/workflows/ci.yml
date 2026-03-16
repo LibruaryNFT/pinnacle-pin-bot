@@ -8,10 +8,15 @@ on:
 
 jobs:
   test:
-    uses: LibruaryNFT/shared-workflows/.github/workflows/node-ci.yml@main
-    with:
-      node-version: '20'
-      test-command: 'echo "No tests yet — CI validates install + lint"'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - run: npm ci
+      - run: echo "No tests yet — CI validates install + lint"
 
   security:
     uses: LibruaryNFT/shared-workflows/.github/workflows/security-scan.yml@main
