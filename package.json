@@ -4,7 +4,7 @@
   "description": "A bot for monitoring and tweeting Pinnacle NFT sales on Flow blockchain",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js",
+    "start": "node start.js --live-tweets",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
@@ -27,6 +27,7 @@
   },
   "homepage": "https://github.com/LibruaryNFT/pinnacle-pin-bot#readme",
   "dependencies": {
+    "@google-cloud/secret-manager": "^6.1.1",
     "@onflow/fcl": "^1.17.0",
     "axios": "^1.9.0",
     "canvas": "^3.2.1",

@@ -40,6 +40,8 @@ jobs:
             chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot &&
             npm install --production &&
             chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot &&
+            sed -i "s|ExecStart=.*|ExecStart=/usr/bin/node /opt/pinnacle-pin-bot/start.js --live-tweets|" /etc/systemd/system/pinnacle-pin-bot.service &&
+            systemctl daemon-reload &&
             systemctl restart pinnacle-pin-bot
           '
 
