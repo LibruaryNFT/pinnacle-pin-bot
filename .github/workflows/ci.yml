@@ -24,7 +24,23 @@ jobs:
   notify:
     needs: [test, security]
     if: failure()
-    uses: LibruaryNFT/shared-workflows/.github/workflows/notify-failure.yml@a8883854338fa11165eade6f64d50d983e5e23b7
-    with:
-      project: 'pinnacle-pin-bot'
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create failure issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create \
+            --repo ${{ github.repository }} \
+            --title "[CI-FAIL] pinnacle-pin-bot — ${{ github.workflow }} failed" \
+            --label "ci-failure" \
+            --body "## CI Failure
+
+          | Field | Value |
+          |-------|-------|
+          | **Workflow** | ${{ github.workflow }} |
+          | **Branch** | ${{ github.ref_name }} |
+          | **Commit** | \`${{ github.sha }}\` |
+          | **Run** | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
