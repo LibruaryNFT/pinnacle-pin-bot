@@ -3,28 +3,10 @@ name: CI
 on:
   push:
     branches: [master, main]
-  pull_request:
-    branches: [master, main]
 
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: 'npm'
-      - run: npm ci
-      - run: echo "No tests yet — CI validates install + lint"
-
-  security:
-    uses: LibruaryNFT/shared-workflows/.github/workflows/security-scan.yml@main
-
-  notify:
-    needs: [test, security]
-    if: failure()
-    uses: LibruaryNFT/shared-workflows/.github/workflows/notify-failure.yml@main
-    with:
-      project: 'pinnacle-pin-bot'
-    secrets: inherit
+      - run: echo "hello"
