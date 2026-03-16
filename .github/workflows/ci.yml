@@ -20,3 +20,11 @@ jobs:
 
   security:
     uses: LibruaryNFT/shared-workflows/.github/workflows/security-scan.yml@main
+
+  notify:
+    needs: [test, security]
+    if: failure()
+    uses: LibruaryNFT/shared-workflows/.github/workflows/notify-failure.yml@a8883854
+    with:
+      project: 'pinnacle-pin-bot'
+    secrets: inherit
