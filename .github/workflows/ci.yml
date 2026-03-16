@@ -22,5 +22,4 @@ jobs:
     uses: LibruaryNFT/shared-workflows/.github/workflows/notify-failure.yml@main
     with:
       project: 'pinnacle-pin-bot'
-    secrets:
-      DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+    secrets: inherit
