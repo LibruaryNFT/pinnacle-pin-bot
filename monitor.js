@@ -110,6 +110,32 @@ const tweetQueue = []; // [{ job: async () => void, resolve: () => void }]
 let tweetsSent = 0;
 let lastTweetAt = null;
 let lastSaleAttemptedAt = null;
+let failedTweets = 0;
+
+/* ── Discord Alerts ─────────────────────────────────────── */
+async function sendDiscordAlert(title, description, color = 0xff0000) {
+  const webhookUrl = process.env.DISCORD_WEBHOOK_URL;
+  if (!webhookUrl) {
+    log("warn", "DISCORD_WEBHOOK_URL not set, skipping alert");
+    return;
+  }
+  try {
+    await fetch(webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        embeds: [{
+          title: `🚨 PinnacleBot: ${title}`,
+          description,
+          color,
+          timestamp: new Date().toISOString(),
+        }],
+      }),
+    });
+  } catch (err) {
+    log("error", "Failed to send Discord alert", { error: err.message });
+  }
+}
 
 function nextDelayMs() {
   const jitter = TWEET_JITTER_MS ? Math.floor(Math.random() * (TWEET_JITTER_MS + 1)) : 0;
@@ -635,6 +661,11 @@ async function handleListing(evt) {
         lastTweetAt = new Date().toISOString();
       } catch (error) {
         log("error", "Failed to tweet", { error: error.message, tweetData });
+        failedTweets++;
+        await sendDiscordAlert(
+          "Tweet Failed",
+          `**Error:** ${error.message}\n**Sale:** $${tweetData.usd} — ${tweetData.chars}\n**Edition:** ${tweetData.ed.name} #${tweetData.serial}/${tweetData.ed.max}\n**Seller:** ${tweetData.seller} → **Buyer:** ${tweetData.buyer}\n\nFailed tweets this session: ${failedTweets}`
+        );
       }
     });
 
@@ -734,6 +765,12 @@ async function runLiveSubscription() {
         jitterSeconds: TWEET_JITTER_SECONDS,
       });
     }
+
+    await sendDiscordAlert(
+      "Bot Started",
+      `Mode: ${config.ENABLE_TWEETS ? "LIVE" : "DRY RUN"}\nThreshold: $${config.PINNACLE_PRICE_THRESHOLD}+\nDiscord alerts: active`,
+      0x00ff00
+    );
 
     log("info", "Starting live event subscription...");
 
