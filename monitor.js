@@ -85,8 +85,8 @@ function log(type, message, data = {}) {
 let twitterClient;
 if (config.ENABLE_TWEETS) {
   twitterClient = new TwitterApi({
-    appKey: process.env.TWITTER_API_KEY,
-    appSecret: process.env.TWITTER_API_SECRET,
+    appKey: process.env.PINNACLEPINBOT_API_KEY,
+    appSecret: process.env.PINNACLEPINBOT_API_SECRET,
     accessToken: process.env.PINNACLEPINBOT_ACCESS_TOKEN,
     accessSecret: process.env.PINNACLEPINBOT_ACCESS_SECRET,
   });
