@@ -187,8 +187,66 @@ async function processTweetQueue() {
   }
 }
 
+/* ── Flow Node Pool ────────────────────────────────────── */
+const NODE_POOL = [
+  { fcl: "https://mainnet.onflow.org", rest: "https://rest-mainnet.onflow.org" },
+  { fcl: "https://access-mainnet.onflow.org", rest: "https://rest-mainnet.onflow.org" },
+];
+
+// Per-node health tracking
+const nodeHealth = NODE_POOL.map(() => ({
+  consecutiveFailures: 0,
+  lastFailure: 0,
+  lastSuccess: 0,
+}));
+
+const PRIMARY_RECOVERY_MS = 60_000; // Try primary again after 60s
+let activeNodeIndex = 0;
+
+function pickNode() {
+  const now = Date.now();
+  const primary = nodeHealth[0];
+
+  // If we're on a fallback and primary has cooled off, try primary again
+  if (
+    activeNodeIndex !== 0 &&
+    primary.consecutiveFailures > 0 &&
+    now - primary.lastFailure > PRIMARY_RECOVERY_MS
+  ) {
+    log("info", "Primary node cooldown elapsed, rotating back to primary");
+    setActiveNode(0);
+  }
+
+  return activeNodeIndex;
+}
+
+function setActiveNode(index) {
+  if (index === activeNodeIndex) return;
+  activeNodeIndex = index;
+  fcl.config().put("accessNode.api", NODE_POOL[index].fcl);
+  log("warn", `Switched to node ${index}: ${NODE_POOL[index].fcl}`);
+}
+
+function markNodeSuccess(index) {
+  nodeHealth[index].consecutiveFailures = 0;
+  nodeHealth[index].lastSuccess = Date.now();
+}
+
+function markNodeFailure(index) {
+  nodeHealth[index].consecutiveFailures++;
+  nodeHealth[index].lastFailure = Date.now();
+}
+
+function getRestEndpoint() {
+  return NODE_POOL[activeNodeIndex].rest;
+}
+
 /* ── Flow Setup ─────────────────────────────────────────── */
-fcl.config().put("accessNode.api", config.FLOW_ACCESS_NODE).put("fcl.eventPollRate", 500); // Reduced to 500ms for faster response
+fcl
+  .config()
+  .put("accessNode.api", NODE_POOL[0].fcl)
+  .put("fcl.eventPollRate", 500)
+  .put("fcl.requestLogging", false); // Suppress "Access node unavailable" console.warn spam
 
 /* ── Cadence Scripts ────────────────────────────────────── */
 let pinnacleScript, editionScript;
@@ -201,7 +259,9 @@ try {
 }
 
 /* ── Helper Functions ───────────────────────────────────── */
-async function retry(op, n = 3, d = 1000) {
+
+// Simple retry for REST calls — no node rotation, just backoff
+async function retrySimple(op, n = 3, d = 1000) {
   let lastErr;
   for (let i = 0; i < n; i++) {
     try {
@@ -214,8 +274,36 @@ async function retry(op, n = 3, d = 1000) {
   throw lastErr;
 }
 
+// Node-aware retry for FCL calls — tries all nodes before giving up
+async function retryWithFailover(op, n = 3, d = 1000) {
+  let lastErr;
+  const startNode = pickNode();
+
+  for (let nodeAttempt = 0; nodeAttempt < NODE_POOL.length; nodeAttempt++) {
+    const nodeIndex = (startNode + nodeAttempt) % NODE_POOL.length;
+    if (nodeAttempt > 0) setActiveNode(nodeIndex);
+
+    for (let i = 0; i < n; i++) {
+      try {
+        const result = await op();
+        markNodeSuccess(nodeIndex);
+        return result;
+      } catch (err) {
+        lastErr = err;
+        markNodeFailure(nodeIndex);
+        if (i < n - 1) await new Promise((r) => setTimeout(r, d));
+      }
+    }
+    if (nodeAttempt < NODE_POOL.length - 1) {
+      log("warn", `Node ${nodeIndex} (${NODE_POOL[nodeIndex].fcl}) exhausted ${n} retries, failing over`);
+    }
+  }
+  throw lastErr;
+}
+
+// REST calls — simple retry, no node rotation (REST endpoint is independent of FCL node)
 async function get(url) {
-  return retry(async () => {
+  return retrySimple(async () => {
     const res = await fetch(url);
     if (!res.ok) {
       const errorBody = await res.text();
@@ -431,7 +519,7 @@ function composeTweet({ usd, chars, ed }) {
 /* ── Flow Functions ─────────────────────────────────────── */
 async function getTxResults(txId) {
   try {
-    const txUrl = `${config.FLOW_REST_ENDPOINT}/v1/transactions/${txId}`;
+    const txUrl = `${getRestEndpoint()}/v1/transactions/${txId}`;
     const txData = await get(txUrl);
     if (txData && txData.events) {
       return txData;
@@ -441,12 +529,12 @@ async function getTxResults(txId) {
   }
 
   log("info", "Falling back to /transaction_results endpoint.", { txId });
-  const resultsUrl = `${config.FLOW_REST_ENDPOINT}/v1/transaction_results/${txId}`;
+  const resultsUrl = `${getRestEndpoint()}/v1/transaction_results/${txId}`;
   return get(resultsUrl);
 }
 
 async function executePinnacleScript(address, nftId) {
-  return retry(() =>
+  return retryWithFailover(() =>
     fcl
       .send([
         fcl.script(pinnacleScript),
@@ -457,7 +545,7 @@ async function executePinnacleScript(address, nftId) {
 }
 
 async function executeGetEditionScript(editionId) {
-  return retry(() =>
+  return retryWithFailover(() =>
     fcl
       .send([fcl.script(editionScript), fcl.args([fcl.arg(String(editionId), t.Int)])])
       .then(fcl.decode)
@@ -710,7 +798,7 @@ async function runBackfill() {
       log("info", `Querying for event type: ${eventType}`);
       try {
         // Use REST API directly for more reliable event fetching
-        const url = `${config.FLOW_REST_ENDPOINT}/v1/events?type=${encodeURIComponent(
+        const url = `${getRestEndpoint()}/v1/events?type=${encodeURIComponent(
           eventType
         )}&start_height=${fromBlock}&end_height=${toBlock}`;
         const response = await fetch(url);
