@@ -1,5 +1,12 @@
 "use strict";
 
+/**
+ * Layout 1 REFINED: Image on top, price-first info bar with gradient blend
+ * - Price is the STAR (biggest text, gold, first thing you see)
+ * - Character name gets its own full-width line (never truncates)
+ * - Gradient fade from image into info bar (no hard line)
+ */
+
 const { createCanvas, loadImage, registerFont } = require("canvas");
 const path = require("path");
 
@@ -25,15 +32,15 @@ function roundRect(ctx, x, y, w, h, r, fill, stroke) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
   ctx.lineTo(x + w - r, y);
-  ctx.arcTo(x + w, y,     x + w, y + r,     r);
+  ctx.arcTo(x + w, y, x + w, y + r, r);
   ctx.lineTo(x + w, y + h - r);
   ctx.arcTo(x + w, y + h, x + w - r, y + h, r);
   ctx.lineTo(x + r, y + h);
-  ctx.arcTo(x,     y + h, x,       y + h - r, r);
+  ctx.arcTo(x, y + h, x, y + h - r, r);
   ctx.lineTo(x, y + r);
-  ctx.arcTo(x,     y,     x + r,   y,         r);
+  ctx.arcTo(x, y, x + r, y, r);
   ctx.closePath();
-  if (fill)   { ctx.fillStyle = fill;     ctx.fill(); }
+  if (fill)   { ctx.fillStyle = fill;   ctx.fill(); }
   if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
 }
 
@@ -42,31 +49,6 @@ function truncate(ctx, text, maxWidth) {
   let t = text;
   while (t.length > 0 && ctx.measureText(t + "…").width > maxWidth) t = t.slice(0, -1);
   return t + "…";
-}
-
-/** Word-wrap text to fit within maxWidth, return array of lines */
-function wrapText(ctx, text, maxWidth, maxLines = 2) {
-  const words = text.split(/\s+/);
-  const lines = [];
-  let current = "";
-
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const test = current ? current + " " + word : word;
-    if (ctx.measureText(test).width <= maxWidth) {
-      current = test;
-    } else {
-      if (current) lines.push(current);
-      current = word;
-      if (lines.length >= maxLines - 1) {
-        const remaining = [current, ...words.slice(i + 1)].join(" ");
-        lines.push(truncate(ctx, remaining, maxWidth));
-        return lines;
-      }
-    }
-  }
-  if (current) lines.push(current);
-  return lines;
 }
 
 let _logoImg = null;
@@ -78,287 +60,189 @@ async function getLogo() {
   return _logoImg;
 }
 
-/*
- * PROPOSED v3 — all feedback incorporated:
- *
- * vs current (720×720, dim text, truncated set names):
- *  1. 2x resolution (1440×1440) — crisp on Twitter/mobile
- *  2. Panel split 38/62 (was 34/66) — more text room
- *  3. Background slightly more blue — reads as intentional on Twitter's white timeline
- *  4. Simplified opacity: 3 tiers only (100%, 80%, 60%) — no more muddy mid-values
- *  5. Full set name with word-wrap at 16px (was 14px, split on "•")
- *  6. Better vertical spacing — content distributed evenly, no dead zone
- */
 async function renderSaleCard({
   usd, character, setName, serial, maxMint, editionType,
   seller, buyer, nftBuffer, isChaser, variant,
 }) {
   const SCALE = 2;
-  const W = 720 * SCALE, H = 720 * SCALE;
-  const LEFT_W = Math.floor(W * 0.38);               // CHANGED: 34% → 38%
-  const PAD = 24 * SCALE;
-  const TEXT_MAX = LEFT_W - PAD * 2;
+  const W = 720 * SCALE;           // 1440px wide
+  const INFO_H = 240 * SCALE;      // 480px info bar — room for big price + name + metadata + breathing
+  const IMG_H = 480 * SCALE;       // 960px for image area
+  const FADE_H = 150 * SCALE;      // tall gradient blend (Opus recommendation)
+  const H = IMG_H + INFO_H;        // 1400px total
+  const PAD = 28 * SCALE;
 
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
-
   const fs = (size) => size * SCALE;
 
-  /* ── Color tiers (solid colors, not opacity — crisper on all screens) ── */
-  const PRIMARY   = "#ffffff";                        // names, prices, key data
-  const SECONDARY = "#C0C8D4";                        // labels, set name, serial text
-  const TERTIARY  = "#8A94A0";                        // small captions (SELLER/BUYER labels)
+  const PRIMARY   = "#ffffff";
+  const SECONDARY = "#C0C8D4";
+  const TERTIARY  = "#8A94A0";
 
-  /* ── Background — slightly more blue ── */
-  const leftGrad = ctx.createLinearGradient(0, 0, 0, H);
-  leftGrad.addColorStop(0, "#0D0F20");                // CHANGED: was #0C0618
-  leftGrad.addColorStop(1, "#080C1E");                // CHANGED: was #060D1A
-  ctx.fillStyle = leftGrad;
-  ctx.fillRect(0, 0, LEFT_W, H);
-
-  const rightGrad = ctx.createLinearGradient(LEFT_W, 0, W, H);
-  rightGrad.addColorStop(0, "#0E0E1C");               // CHANGED: was #0D0D18
-  rightGrad.addColorStop(1, "#0A0A14");               // CHANGED: was #08080F
-  ctx.fillStyle = rightGrad;
-  ctx.fillRect(LEFT_W, 0, W - LEFT_W, H);
-
-  /* ── Separator line ── */
-  ctx.strokeStyle = "rgba(255,255,255,0.10)";
-  ctx.lineWidth = 1 * SCALE;
-  ctx.beginPath();
-  ctx.moveTo(LEFT_W, H * 0.06);
-  ctx.lineTo(LEFT_W, H * 0.94);
-  ctx.stroke();
-
-  /* ── Right panel: subtle glow ── */
   const tierKey = editionType || "Open";
   const tierStyle = TIER[tierKey] || TIER.Open;
-  const gCX = LEFT_W + (W - LEFT_W) / 2;
-  const gCY = H / 2;
-  const radGlow = ctx.createRadialGradient(gCX, gCY, 0, gCX, gCY, 280 * SCALE);
-  radGlow.addColorStop(0, tierStyle.bg.replace(/[\d.]+\)$/, "0.12)"));
+
+  const INFO_BG = "#0B0D1A";
+
+  /* ── Full background ── */
+  ctx.fillStyle = "#08080F";
+  ctx.fillRect(0, 0, W, H);
+
+  /* ── Image area background ── */
+  const imgBg = ctx.createLinearGradient(0, 0, W, IMG_H);
+  imgBg.addColorStop(0, "#0E0E1C");
+  imgBg.addColorStop(1, "#0A0A14");
+  ctx.fillStyle = imgBg;
+  ctx.fillRect(0, 0, W, IMG_H);
+
+  /* ── Subtle tier glow behind image ── */
+  const gCX = W / 2, gCY = IMG_H / 2;
+  const radGlow = ctx.createRadialGradient(gCX, gCY, 0, gCX, gCY, 350 * SCALE);
+  radGlow.addColorStop(0, tierStyle.bg.replace(/[\d.]+\)$/, "0.15)"));
   radGlow.addColorStop(1, "rgba(0,0,0,0)");
   ctx.fillStyle = radGlow;
-  ctx.fillRect(LEFT_W, 0, W - LEFT_W, H);
+  ctx.fillRect(0, 0, W, IMG_H);
 
-  /* ── NFT image ── */
+  /* ── NFT image (aspect-fit + blurred background for narrow pins) ── */
   if (nftBuffer) {
     try {
       const nftImg = await loadImage(nftBuffer);
-      const rightW = W - LEFT_W;
-      const imgSize = Math.min(440 * SCALE, rightW - 30 * SCALE);
-      const imgX = LEFT_W + Math.floor((rightW - imgSize) / 2);
-      const imgY = Math.floor((H - imgSize) / 2);
-      ctx.drawImage(nftImg, imgX, imgY, imgSize, imgSize);
+      const pad = 16 * SCALE;
+      const boxW = W - pad * 2;
+      const boxH = IMG_H - pad * 2;
+      const scale = Math.min(boxW / nftImg.width, boxH / nftImg.height);
+      const drawW = Math.floor(nftImg.width * scale);
+      const drawH = Math.floor(nftImg.height * scale);
+      const imgX = Math.floor((W - drawW) / 2);
+      const imgY = Math.floor((IMG_H - drawH) / 2);
+
+      // Pin image
+      ctx.drawImage(nftImg, imgX, imgY, drawW, drawH);
     } catch {}
   }
 
-  /* ══════════════════════════════════════════════════════════
-     LEFT PANEL — distributed vertical spacing
-     ══════════════════════════════════════════════════════════ */
+  /* ── Gradient fade: image blends into info bar (no hard line) ── */
+  const fadeGrad = ctx.createLinearGradient(0, IMG_H - FADE_H, 0, IMG_H);
+  fadeGrad.addColorStop(0, "rgba(11,13,26,0)");      // transparent
+  fadeGrad.addColorStop(1, INFO_BG);                   // matches info bar
+  ctx.fillStyle = fadeGrad;
+  ctx.fillRect(0, IMG_H - FADE_H, W, FADE_H);
 
-  let y = 52 * SCALE;
+  /* ── Info bar background ── */
+  ctx.fillStyle = INFO_BG;
+  ctx.fillRect(0, IMG_H, W, INFO_H);
 
-  /* ── "DISNEY PINNACLE" header ── */
-  ctx.font = `800 ${fs(22)}px ${SG}`;
-  ctx.fillStyle = SECONDARY;
-  ctx.fillText("DISNEY PINNACLE", PAD, y);
-  y += 36 * SCALE;
+  /* ══════════════════════════════════════════════════
+     INFO BAR — Price is the STAR
+     ══════════════════════════════════════════════════ */
 
-  /* ── Price ── */
+  let y = IMG_H + 4 * SCALE;
+
+  /* ── Row 1: BIG PRICE (the star — 96px, no label) ── */
   const rounded = Math.round(usd);
-  const digits = rounded.toLocaleString();
+  const priceStr = `$${rounded.toLocaleString()}`;
 
-  let dfs = fs(72);
-  let sfs = fs(40);
-  function measurePrice(df, sf) {
-    ctx.font = `800 ${sf}px ${SG}`;
-    let w = ctx.measureText("$").width + 2 * SCALE;
-    for (const ch of digits) {
-      if (ch === ",") { ctx.font = `700 ${sf}px ${SG}`; }
-      else            { ctx.font = `900 ${df}px ${SG}`; }
-      w += ctx.measureText(ch).width;
-    }
-    return w;
-  }
-  while (dfs > fs(40) && measurePrice(dfs, sfs) > TEXT_MAX) {
-    dfs -= 4 * SCALE;
-    sfs = Math.round(dfs * 0.55);
+  let priceFontSize = fs(96);
+  ctx.font = `900 ${priceFontSize}px ${SG}`;
+  while (priceFontSize > fs(50) && ctx.measureText(priceStr).width > W - PAD * 2) {
+    priceFontSize -= 4 * SCALE;
+    ctx.font = `900 ${priceFontSize}px ${SG}`;
   }
 
-  const baseY = y + dfs * 0.85;
-  const symYOffset = (dfs - sfs) * 0.35;
+  ctx.fillStyle = "#F5C842";
+  ctx.fillText(priceStr, PAD, y + priceFontSize * 0.8);
 
-  // $ symbol
-  ctx.font = `800 ${sfs}px ${SG}`;
-  ctx.fillStyle = "rgba(245,200,66,0.85)";
-  const dollarW = ctx.measureText("$").width;
-  ctx.fillText("$", PAD, baseY - symYOffset);
+  y += priceFontSize * 0.85 + 10 * SCALE;
 
-  // Digits
-  let px = PAD + dollarW + 2 * SCALE;
-  for (const ch of digits) {
-    if (ch === ",") {
-      ctx.font = `700 ${sfs}px ${SG}`;
-      ctx.fillStyle = "rgba(245,200,66,0.65)";
-      ctx.fillText(ch, px, baseY - symYOffset);
-      px += ctx.measureText(ch).width;
-    } else {
-      ctx.font = `900 ${dfs}px ${SG}`;
-      ctx.fillStyle = "#F5C842";
-      ctx.fillText(ch, px, baseY);
-      px += ctx.measureText(ch).width;
-    }
-  }
-  y += dfs + 14 * SCALE;
-
-  // "SALE PRICE · USD"
-  ctx.font = `600 ${fs(15)}px ${SG}`;
-  ctx.fillStyle = SECONDARY;
-  ctx.fillText("SALE PRICE · USD", PAD, y);
-  y += 34 * SCALE;
-
-  /* ── Divider ── */
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
-  ctx.lineWidth = 1 * SCALE;
-  ctx.beginPath();
-  ctx.moveTo(PAD, y);
-  ctx.lineTo(LEFT_W - PAD, y);
-  ctx.stroke();
-  y += 32 * SCALE;
-
-  /* ── Character name ── */
-  ctx.font = `900 ${fs(36)}px ${SG}`;
+  /* ── Row 2: Character name (full width, never truncates) ── */
+  ctx.font = `900 ${fs(44)}px ${SG}`;
   ctx.fillStyle = PRIMARY;
-  const charText = truncate(ctx, character, TEXT_MAX);
-  ctx.fillText(charText, PAD, y + 26 * SCALE);
-  y += 46 * SCALE;
-
-  /* ── Set name — full name, wrap to 2 lines ── */
-  ctx.font = `600 ${fs(18)}px ${SG}`;
-  ctx.fillStyle = SECONDARY;
-  const setLines = wrapText(ctx, setName, TEXT_MAX, 2);
-  for (const line of setLines) {
-    ctx.fillText(line, PAD, y + 14 * SCALE);
-    y += 24 * SCALE;
+  let nameFontSize = fs(44);
+  const nameMaxW = W - PAD * 2;
+  while (nameFontSize > fs(20) && ctx.measureText(character).width > nameMaxW) {
+    nameFontSize -= 2 * SCALE;
+    ctx.font = `900 ${nameFontSize}px ${SG}`;
   }
-  if (setLines.length === 1) y += 8 * SCALE;
-  y += 8 * SCALE;
+  ctx.fillText(character, PAD, y + nameFontSize * 0.8);
 
-  /* ── Edition type badge ── */
-  ctx.font = `800 ${fs(15)}px ${SG}`;
+  y += nameFontSize + 14 * SCALE;
+
+  /* ── Row 3: Set name + Edition badge + Serial ── */
+  let x = PAD;
+
+  ctx.font = `600 ${fs(17)}px ${SG}`;
+  ctx.fillStyle = SECONDARY;
+  ctx.fillText(setName, x, y + 14 * SCALE);
+  x += ctx.measureText(setName).width + 14 * SCALE;
+
+  ctx.fillStyle = TERTIARY;
+  ctx.fillText("·", x, y + 14 * SCALE);
+  x += ctx.measureText("·").width + 14 * SCALE;
+
+  // Edition badge
+  ctx.font = `800 ${fs(13)}px ${SG}`;
   const tierText = tierKey.toUpperCase();
   const tierTW = ctx.measureText(tierText).width;
-  const badgeW = tierTW + 24 * SCALE;
-  const badgeH = 30 * SCALE;
-  roundRect(ctx, PAD, y, badgeW, badgeH, 13 * SCALE, tierStyle.bg, tierStyle.border);
+  const badgeW = tierTW + 18 * SCALE;
+  const badgeH = 24 * SCALE;
+  roundRect(ctx, x, y + 1 * SCALE, badgeW, badgeH, 10 * SCALE, tierStyle.bg, tierStyle.border);
   ctx.fillStyle = tierStyle.text;
-  ctx.fillText(tierText, PAD + 12 * SCALE, y + 17 * SCALE);
+  ctx.fillText(tierText, x + 9 * SCALE, y + 15 * SCALE);
+  x += badgeW + 14 * SCALE;
 
-  let badgeX = PAD + badgeW + 8 * SCALE;
-
-  /* ── Chaser crown ── */
+  // Chaser
   if (isChaser) {
-    const crownX = badgeX;
-    const crownY = y + 4 * SCALE;
-    const crownW = 18 * SCALE;
-    const crownH = 14 * SCALE;
+    ctx.font = `800 ${fs(13)}px ${SG}`;
     ctx.fillStyle = "#FFD700";
-    ctx.beginPath();
-    ctx.moveTo(crownX, crownY + crownH);
-    ctx.lineTo(crownX + crownW, crownY + crownH);
-    ctx.lineTo(crownX + crownW, crownY + crownH - 4 * SCALE);
-    ctx.lineTo(crownX, crownY + crownH - 4 * SCALE);
-    ctx.closePath();
-    ctx.fill();
-    ctx.beginPath();
-    ctx.moveTo(crownX, crownY + crownH - 4 * SCALE);
-    ctx.lineTo(crownX + 2 * SCALE, crownY);
-    ctx.lineTo(crownX + crownW * 0.3, crownY + 5 * SCALE);
-    ctx.lineTo(crownX + crownW / 2, crownY - 1 * SCALE);
-    ctx.lineTo(crownX + crownW * 0.7, crownY + 5 * SCALE);
-    ctx.lineTo(crownX + crownW - 2 * SCALE, crownY);
-    ctx.lineTo(crownX + crownW, crownY + crownH - 4 * SCALE);
-    ctx.closePath();
-    ctx.fill();
-    ctx.font = `800 ${fs(15)}px ${SG}`;
-    ctx.fillStyle = "#FFD700";
-    ctx.fillText("CHASER", crownX + crownW + 5 * SCALE, y + 17 * SCALE);
-    const chaserTW = ctx.measureText("CHASER").width;
-    badgeX += crownW + 5 * SCALE + chaserTW + 12 * SCALE;
+    ctx.fillText("★ CHASER", x, y + 15 * SCALE);
+    x += ctx.measureText("★ CHASER").width + 14 * SCALE;
   }
 
-  /* ── Variant badge ── */
+  // Variant
   if (variant) {
-    ctx.font = `700 ${fs(14)}px ${SG}`;
+    ctx.font = `700 ${fs(12)}px ${SG}`;
     const varText = variant.toUpperCase();
     const varTW = ctx.measureText(varText).width;
-    const varW = varTW + 20 * SCALE;
-    if (badgeX + varW < LEFT_W - PAD) {
-      roundRect(ctx, badgeX, y, varW, badgeH, 13 * SCALE, "rgba(255,255,255,0.10)", "rgba(255,255,255,0.25)");
-      ctx.fillStyle = SECONDARY;
-      ctx.fillText(varText, badgeX + 10 * SCALE, y + 17 * SCALE);
-    }
-  }
-
-  y += badgeH + 28 * SCALE;
-
-  /* ── Serial ── */
-  if (serial != null) {
-    ctx.font = `600 ${fs(16)}px ${SG}`;
+    const varW = varTW + 16 * SCALE;
+    roundRect(ctx, x, y + 1 * SCALE, varW, badgeH, 10 * SCALE, "rgba(255,255,255,0.10)", "rgba(255,255,255,0.25)");
     ctx.fillStyle = SECONDARY;
-    const serialLabel = "Serial  ";
-    ctx.fillText(serialLabel, PAD, y + 12 * SCALE);
-    const prefW = ctx.measureText(serialLabel).width;
-
-    ctx.font = `800 ${fs(16)}px ${SG}`;
-    ctx.fillStyle = PRIMARY;
-    const serialNum = `#${serial}`;
-    ctx.fillText(serialNum, PAD + prefW, y + 12 * SCALE);
-    const numW = ctx.measureText(serialNum).width;
-
-    if (maxMint) {
-      ctx.font = `600 ${fs(16)}px ${SG}`;
-      ctx.fillStyle = SECONDARY;
-      ctx.fillText(`  of ${maxMint}`, PAD + prefW + numW, y + 12 * SCALE);
-    }
-    y += 36 * SCALE;
+    ctx.fillText(varText, x + 8 * SCALE, y + 15 * SCALE);
+    x += varW + 14 * SCALE;
   }
 
-  y += 18 * SCALE;
+  // Serial
+  if (serial != null) {
+    ctx.fillStyle = TERTIARY;
+    ctx.font = `600 ${fs(15)}px ${SG}`;
+    ctx.fillText("·", x, y + 14 * SCALE);
+    x += ctx.measureText("·").width + 14 * SCALE;
 
-  /* ── Divider ── */
-  ctx.strokeStyle = "rgba(255,255,255,0.12)";
-  ctx.lineWidth = 1 * SCALE;
-  ctx.beginPath();
-  ctx.moveTo(PAD, y);
-  ctx.lineTo(LEFT_W - PAD, y);
-  ctx.stroke();
-  y += 30 * SCALE;
+    ctx.font = `700 ${fs(15)}px ${SG}`;
+    ctx.fillStyle = PRIMARY;
+    ctx.fillText(`#${serial}`, x, y + 14 * SCALE);
+    x += ctx.measureText(`#${serial}`).width;
+    if (maxMint) {
+      ctx.font = `600 ${fs(15)}px ${SG}`;
+      ctx.fillStyle = SECONDARY;
+      ctx.fillText(` of ${maxMint}`, x, y + 14 * SCALE);
+    }
+  }
 
-  /* ── Seller / Buyer ── */
-  ctx.font = `600 ${fs(15)}px ${SG}`;
+  y += 38 * SCALE;
+
+  /* ── Row 4: Seller → Buyer + Logo ── */
+  ctx.font = `600 ${fs(14)}px ${SG}`;
   ctx.fillStyle = TERTIARY;
-  ctx.fillText("SELLER", PAD, y + 8 * SCALE);
-  ctx.font = `700 ${fs(16)}px ${SG}`;
-  ctx.fillStyle = PRIMARY;
-  ctx.fillText(truncate(ctx, seller, TEXT_MAX), PAD, y + 28 * SCALE);
-  y += 48 * SCALE;
+  ctx.fillText(`${seller}  →  ${buyer}`, PAD, y + 10 * SCALE);
 
-  ctx.font = `600 ${fs(15)}px ${SG}`;
-  ctx.fillStyle = TERTIARY;
-  ctx.fillText("BUYER", PAD, y + 8 * SCALE);
-  ctx.font = `700 ${fs(16)}px ${SG}`;
-  ctx.fillStyle = PRIMARY;
-  ctx.fillText(truncate(ctx, buyer, TEXT_MAX), PAD, y + 28 * SCALE);
-
-  /* ── Bottom: Vaultopolis logo ── */
+  // Logo (bottom right)
   const logo = await getLogo();
   if (logo) {
-    const logoH = 24 * SCALE;
+    const logoH = 22 * SCALE;
     const logoW = logoH * (logo.width / logo.height);
-    ctx.globalAlpha = 0.7;
-    ctx.drawImage(logo, PAD, H - logoH - 24 * SCALE, logoW, logoH);
+    ctx.globalAlpha = 0.5;
+    ctx.drawImage(logo, W - logoW - PAD, H - logoH - 16 * SCALE, logoW, logoH);
     ctx.globalAlpha = 1.0;
   }
 
