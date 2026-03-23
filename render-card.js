@@ -1,10 +1,17 @@
 "use strict";
 
 /**
- * Layout 1 REFINED: Image on top, price-first info bar with gradient blend
- * - Price is the STAR (biggest text, gold, first thing you see)
- * - Character name gets its own full-width line (never truncates)
- * - Gradient fade from image into info bar (no hard line)
+ * Layout 1 — "Price-Hero Refined"
+ *
+ * Changes from current:
+ *  - Info bar: 480px → 380px (more image real estate)
+ *  - Price: 96px → 80px (still dominant, less crushing)
+ *  - Name: 44px → 40px (proportional)
+ *  - Better vertical breathing room between sections
+ *  - Set name: 15px tertiary (de-emphasized — it's context, not selling point)
+ *  - Badges + serial on one clean line
+ *  - Seller → buyer smaller, tertiary
+ *  - No logo
  */
 
 const { createCanvas, loadImage, registerFont } = require("canvas");
@@ -65,11 +72,11 @@ async function renderSaleCard({
   seller, buyer, nftBuffer, isChaser, variant,
 }) {
   const SCALE = 2;
-  const W = 720 * SCALE;           // 1440px wide
-  const INFO_H = 240 * SCALE;      // 480px info bar — room for big price + name + metadata + breathing
-  const IMG_H = 480 * SCALE;       // 960px for image area
-  const FADE_H = 150 * SCALE;      // tall gradient blend (Opus recommendation)
-  const H = IMG_H + INFO_H;        // 1400px total
+  const W = 720 * SCALE;                // 1440px wide
+  const INFO_H = 190 * SCALE;           // 380px — tighter info bar (was 480px)
+  const IMG_H = 530 * SCALE;            // 1060px — more image (was 960px)
+  const FADE_H = 150 * SCALE;
+  const H = IMG_H + INFO_H;             // 1440px total (square)
   const PAD = 28 * SCALE;
 
   const canvas = createCanvas(W, H);
@@ -104,7 +111,7 @@ async function renderSaleCard({
   ctx.fillStyle = radGlow;
   ctx.fillRect(0, 0, W, IMG_H);
 
-  /* ── NFT image (aspect-fit + blurred background for narrow pins) ── */
+  /* ── NFT image (aspect-fit) ── */
   if (nftBuffer) {
     try {
       const nftImg = await loadImage(nftBuffer);
@@ -116,16 +123,14 @@ async function renderSaleCard({
       const drawH = Math.floor(nftImg.height * scale);
       const imgX = Math.floor((W - drawW) / 2);
       const imgY = Math.floor((IMG_H - drawH) / 2);
-
-      // Pin image
       ctx.drawImage(nftImg, imgX, imgY, drawW, drawH);
     } catch {}
   }
 
-  /* ── Gradient fade: image blends into info bar (no hard line) ── */
+  /* ── Gradient fade into info bar ── */
   const fadeGrad = ctx.createLinearGradient(0, IMG_H - FADE_H, 0, IMG_H);
-  fadeGrad.addColorStop(0, "rgba(11,13,26,0)");      // transparent
-  fadeGrad.addColorStop(1, INFO_BG);                   // matches info bar
+  fadeGrad.addColorStop(0, "rgba(11,13,26,0)");
+  fadeGrad.addColorStop(1, INFO_BG);
   ctx.fillStyle = fadeGrad;
   ctx.fillRect(0, IMG_H - FADE_H, W, FADE_H);
 
@@ -134,18 +139,18 @@ async function renderSaleCard({
   ctx.fillRect(0, IMG_H, W, INFO_H);
 
   /* ══════════════════════════════════════════════════
-     INFO BAR — Price is the STAR
+     INFO BAR — Price-Hero Refined
      ══════════════════════════════════════════════════ */
 
-  let y = IMG_H + 4 * SCALE;
+  let y = IMG_H + 6 * SCALE;
 
-  /* ── Row 1: BIG PRICE (the star — 96px, no label) ── */
+  /* ── Row 1: Price (80px — still the star, less crushing) ── */
   const rounded = Math.round(usd);
   const priceStr = `$${rounded.toLocaleString()}`;
 
-  let priceFontSize = fs(96);
+  let priceFontSize = fs(80);
   ctx.font = `900 ${priceFontSize}px ${SG}`;
-  while (priceFontSize > fs(50) && ctx.measureText(priceStr).width > W - PAD * 2) {
+  while (priceFontSize > fs(44) && ctx.measureText(priceStr).width > W - PAD * 2) {
     priceFontSize -= 4 * SCALE;
     ctx.font = `900 ${priceFontSize}px ${SG}`;
   }
@@ -153,12 +158,12 @@ async function renderSaleCard({
   ctx.fillStyle = "#F5C842";
   ctx.fillText(priceStr, PAD, y + priceFontSize * 0.8);
 
-  y += priceFontSize * 0.85 + 10 * SCALE;
+  y += priceFontSize * 0.85 + 16 * SCALE;   // ← more breathing room after price
 
-  /* ── Row 2: Character name (full width, never truncates) ── */
-  ctx.font = `900 ${fs(44)}px ${SG}`;
+  /* ── Row 2: Character name (40px) ── */
+  let nameFontSize = fs(40);
+  ctx.font = `900 ${nameFontSize}px ${SG}`;
   ctx.fillStyle = PRIMARY;
-  let nameFontSize = fs(44);
   const nameMaxW = W - PAD * 2;
   while (nameFontSize > fs(20) && ctx.measureText(character).width > nameMaxW) {
     nameFontSize -= 2 * SCALE;
@@ -166,85 +171,75 @@ async function renderSaleCard({
   }
   ctx.fillText(character, PAD, y + nameFontSize * 0.8);
 
-  y += nameFontSize + 14 * SCALE;
+  y += nameFontSize + 8 * SCALE;
 
-  /* ── Row 3: Set name + Edition badge + Serial ── */
+  /* ── Row 3: Set name (de-emphasized — tertiary, 14px) ── */
+  ctx.font = `500 ${fs(14)}px ${SG}`;
+  ctx.fillStyle = TERTIARY;
+  ctx.fillText(truncate(ctx, setName, W - PAD * 2), PAD, y + 12 * SCALE);
+
+  y += 28 * SCALE;
+
+  /* ── Row 4: Badges + Serial (clean single line) ── */
+  const GAP = 12 * SCALE;
   let x = PAD;
 
-  ctx.font = `600 ${fs(17)}px ${SG}`;
-  ctx.fillStyle = SECONDARY;
-  ctx.fillText(setName, x, y + 14 * SCALE);
-  x += ctx.measureText(setName).width + 14 * SCALE;
-
-  ctx.fillStyle = TERTIARY;
-  ctx.fillText("·", x, y + 14 * SCALE);
-  x += ctx.measureText("·").width + 14 * SCALE;
-
   // Edition badge
-  ctx.font = `800 ${fs(13)}px ${SG}`;
+  ctx.font = `800 ${fs(12)}px ${SG}`;
   const tierText = tierKey.toUpperCase();
   const tierTW = ctx.measureText(tierText).width;
-  const badgeW = tierTW + 18 * SCALE;
-  const badgeH = 24 * SCALE;
-  roundRect(ctx, x, y + 1 * SCALE, badgeW, badgeH, 10 * SCALE, tierStyle.bg, tierStyle.border);
+  const badgeW = tierTW + 16 * SCALE;
+  const badgeH = 22 * SCALE;
+  roundRect(ctx, x, y, badgeW, badgeH, 9 * SCALE, tierStyle.bg, tierStyle.border);
   ctx.fillStyle = tierStyle.text;
-  ctx.fillText(tierText, x + 9 * SCALE, y + 15 * SCALE);
-  x += badgeW + 14 * SCALE;
+  ctx.fillText(tierText, x + 8 * SCALE, y + 13 * SCALE);
+  x += badgeW + GAP;
 
   // Chaser
   if (isChaser) {
-    ctx.font = `800 ${fs(13)}px ${SG}`;
+    ctx.font = `800 ${fs(12)}px ${SG}`;
     ctx.fillStyle = "#FFD700";
-    ctx.fillText("★ CHASER", x, y + 15 * SCALE);
-    x += ctx.measureText("★ CHASER").width + 14 * SCALE;
+    ctx.fillText("★ CHASER", x, y + 13 * SCALE);
+    x += ctx.measureText("★ CHASER").width + GAP;
   }
 
-  // Variant
+  // Variant badge
   if (variant) {
-    ctx.font = `700 ${fs(12)}px ${SG}`;
+    ctx.font = `700 ${fs(11)}px ${SG}`;
     const varText = variant.toUpperCase();
     const varTW = ctx.measureText(varText).width;
-    const varW = varTW + 16 * SCALE;
-    roundRect(ctx, x, y + 1 * SCALE, varW, badgeH, 10 * SCALE, "rgba(255,255,255,0.10)", "rgba(255,255,255,0.25)");
+    const varW = varTW + 14 * SCALE;
+    roundRect(ctx, x, y, varW, badgeH, 9 * SCALE, "rgba(255,255,255,0.08)", "rgba(255,255,255,0.20)");
     ctx.fillStyle = SECONDARY;
-    ctx.fillText(varText, x + 8 * SCALE, y + 15 * SCALE);
-    x += varW + 14 * SCALE;
+    ctx.fillText(varText, x + 7 * SCALE, y + 13 * SCALE);
+    x += varW + GAP;
   }
 
   // Serial
   if (serial != null) {
     ctx.fillStyle = TERTIARY;
-    ctx.font = `600 ${fs(15)}px ${SG}`;
-    ctx.fillText("·", x, y + 14 * SCALE);
-    x += ctx.measureText("·").width + 14 * SCALE;
+    ctx.font = `500 ${fs(14)}px ${SG}`;
+    ctx.fillText("·", x, y + 12 * SCALE);
+    x += ctx.measureText("·").width + GAP;
 
-    ctx.font = `700 ${fs(15)}px ${SG}`;
+    ctx.font = `700 ${fs(14)}px ${SG}`;
     ctx.fillStyle = PRIMARY;
-    ctx.fillText(`#${serial}`, x, y + 14 * SCALE);
+    ctx.fillText(`#${serial}`, x, y + 12 * SCALE);
     x += ctx.measureText(`#${serial}`).width;
     if (maxMint) {
-      ctx.font = `600 ${fs(15)}px ${SG}`;
-      ctx.fillStyle = SECONDARY;
-      ctx.fillText(` of ${maxMint}`, x, y + 14 * SCALE);
+      ctx.font = `500 ${fs(14)}px ${SG}`;
+      ctx.fillStyle = TERTIARY;
+      ctx.fillText(` of ${maxMint}`, x, y + 12 * SCALE);
     }
   }
 
-  y += 38 * SCALE;
+  y += 32 * SCALE;
 
-  /* ── Row 4: Seller → Buyer + Logo ── */
-  ctx.font = `600 ${fs(14)}px ${SG}`;
+  /* ── Row 5: Seller → Buyer (small, quiet) ── */
+  ctx.font = `500 ${fs(13)}px ${SG}`;
   ctx.fillStyle = TERTIARY;
-  ctx.fillText(`${seller}  →  ${buyer}`, PAD, y + 10 * SCALE);
-
-  // Logo (bottom right)
-  const logo = await getLogo();
-  if (logo) {
-    const logoH = 22 * SCALE;
-    const logoW = logoH * (logo.width / logo.height);
-    ctx.globalAlpha = 0.5;
-    ctx.drawImage(logo, W - logoW - PAD, H - logoH - 16 * SCALE, logoW, logoH);
-    ctx.globalAlpha = 1.0;
-  }
+  const transferText = truncate(ctx, `${seller}  →  ${buyer}`, W - PAD * 2);
+  ctx.fillText(transferText, PAD, y + 10 * SCALE);
 
   return canvas.toBuffer("image/png");
 }
