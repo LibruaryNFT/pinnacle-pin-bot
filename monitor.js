@@ -941,7 +941,7 @@ http
       res.end("Not found");
     }
   })
-  .listen(HEALTH_PORT, () => {
+  .listen(HEALTH_PORT, '127.0.0.1', () => {
     log("info", `Health check server listening on port ${HEALTH_PORT}`);
   });
 
