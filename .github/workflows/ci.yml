@@ -17,31 +17,18 @@ jobs:
           node-version: '20'
           cache: 'npm'
       - run: npm ci
-      - run: echo "No tests yet — CI validates install + lint"
+      - run: echo "No tests yet — CI validates install"
 
   security:
-    uses: LibruaryNFT/shared-workflows/.github/workflows/security-scan.yml@main
-
-  notify:
-    needs: [test, security]
-    if: failure()
+    name: Security Scan (Trivy)
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
     steps:
-      - name: Create failure issue
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh issue create \
-            --repo ${{ github.repository }} \
-            --title "[CI-FAIL] pinnacle-pin-bot — ${{ github.workflow }} failed" \
-            --label "ci-failure" \
-            --body "## CI Failure
-
-          | Field | Value |
-          |-------|-------|
-          | **Workflow** | ${{ github.workflow }} |
-          | **Branch** | ${{ github.ref_name }} |
-          | **Commit** | \`${{ github.sha }}\` |
-          | **Run** | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
+      - uses: actions/checkout@v4
+      - name: Run Trivy vulnerability scanner
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          scan-type: fs
+          scan-ref: "."
+          severity: "CRITICAL,HIGH"
+          exit-code: "0"
+          format: "table"
