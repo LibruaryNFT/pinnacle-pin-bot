@@ -37,11 +37,11 @@ jobs:
           mkdir -p ~/.ssh
           echo "${{ secrets.VAULTOPOLIS_VPS_SSH_KEY }}" | base64 -d > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H ${{ secrets.VAULTOPOLIS_VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -p 2222 -H ${{ secrets.VAULTOPOLIS_VPS_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
 
       - name: Deploy
         run: |
-          ssh -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} '
+          ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} '
             git config --global --add safe.directory /opt/pinnacle-pin-bot &&
             cd /opt/pinnacle-pin-bot &&
             git reset --hard HEAD &&
@@ -57,7 +57,7 @@ jobs:
       - name: Health check
         run: |
           sleep 10
-          ssh -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} \
+          ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} \
             'curl -sf http://localhost:8092/health | python3 -m json.tool'
 
       - name: Cleanup SSH key
