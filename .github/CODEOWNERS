@@ -1,2 +1,28 @@
-# All changes require review from repo owner
-* @LibruaryNFT
+# CODEOWNERS for pinnacle-pin-bot
+#
+# Paths listed here require Justin's explicit review before merge, even
+# under the Tiered Merge Policy's auto-merge action. The previous
+# blanket `* @LibruaryNFT` rule made every PR human-only, which would
+# defeat auto-merge for Dependabot patch/minor bumps.
+#
+# Effective via runtime parsing in .github/workflows/auto-merge.yml —
+# the workflow reads this file and skips auto-merge if any changed
+# file matches a pattern here.
+
+# CI/CD workflow definitions — merge to main triggers deploy.yml.
+.github/workflows/          @LibruaryNFT
+
+# CODEOWNERS itself.
+.github/CODEOWNERS          @LibruaryNFT
+
+# Tweet-rendering + bot entry points. Bugs here mis-tweet to prod.
+start.js                    @LibruaryNFT
+monitor.js                  @LibruaryNFT
+render-card.js              @LibruaryNFT
+
+# Bot library + Flow integration. Touch with care.
+lib/                        @LibruaryNFT
+flow/                       @LibruaryNFT
+
+# Deploy scripts.
+scripts/                    @LibruaryNFT

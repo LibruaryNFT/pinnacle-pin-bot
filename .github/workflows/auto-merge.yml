@@ -1,0 +1,172 @@
+name: Auto-merge
+
+# Mechanizes the LibruaryNFT Tiered Merge Policy. Two paths:
+#
+#   1. Dependabot patch/minor — auto-merged once CI passes; majors skipped
+#   2. PRs labeled `auto-merge` — same
+#
+# Tier 3 enforcement: BEFORE enabling auto-merge, the workflow parses
+# .github/CODEOWNERS and checks whether the PR touches any owned path.
+# If yes, the merge is left for the human. This makes CODEOWNERS the
+# single source of truth without needing GitHub's "Require review from
+# Code Owners" branch-protection setting (which doesn't fit the
+# LibruaryNFT solo-dev posture — see
+# memory/github-branch-protection-posture.md).
+#
+# Why `gh pr merge --auto`:
+#   - GitHub holds the merge until required status checks pass.
+#   - Cancels automatically if a check turns red later.
+#   - Composes with branch protection's "Require status checks" without
+#     this workflow needing to know which checks are required.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, labeled, ready_for_review]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    if: >-
+      !github.event.pull_request.draft
+      && (
+        github.actor == 'dependabot[bot]'
+        || contains(github.event.pull_request.labels.*.name, 'auto-merge')
+      )
+    steps:
+      - name: Checkout (for CODEOWNERS read)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Fetch Dependabot metadata
+        id: meta
+        if: github.actor == 'dependabot[bot]'
+        uses: dependabot/fetch-metadata@v2
+
+      - name: Decide tier
+        id: tier
+        env:
+          IS_DEPENDABOT: ${{ github.actor == 'dependabot[bot]' }}
+          UPDATE_TYPE: ${{ steps.meta.outputs.update-type }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'auto-merge') }}
+        run: |
+          # Dependabot majors: Tier 3, never auto-merge.
+          if [ "$IS_DEPENDABOT" = "true" ] && [ "$UPDATE_TYPE" = "version-update:semver-major" ]; then
+            echo "decision=skip-major" >> "$GITHUB_OUTPUT"
+            echo "::notice::Tier 3 (major bump) — leaving for human review."
+            exit 0
+          fi
+
+          # Dependabot patch/minor OR labeled — eligible, subject to path check.
+          if [ "$IS_DEPENDABOT" = "true" ] && \
+             [ "$UPDATE_TYPE" != "version-update:semver-patch" ] && \
+             [ "$UPDATE_TYPE" != "version-update:semver-minor" ] && \
+             [ "$HAS_LABEL" != "true" ]; then
+            echo "decision=skip-unknown" >> "$GITHUB_OUTPUT"
+            echo "::notice::No qualifying tier match — skipping."
+            exit 0
+          fi
+
+          echo "decision=eligible" >> "$GITHUB_OUTPUT"
+
+      - name: Check CODEOWNERS-protected paths (Tier 3 backstop)
+        id: protected
+        if: steps.tier.outputs.decision == 'eligible'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ ! -f .github/CODEOWNERS ]; then
+            echo "protected=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Get changed files via the GH API (works without a fetch).
+          files=$(gh pr diff "$PR_NUMBER" --name-only 2>/dev/null || true)
+          if [ -z "$files" ]; then
+            echo "::warning::Could not list PR files — defaulting to protected=true."
+            echo "protected=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "$files" > /tmp/pr-files.txt
+          python3 - <<'PY'
+          import fnmatch, os, sys
+
+          # Parse CODEOWNERS: collect path patterns (first non-blank token of
+          # each rule line). Comments + blank lines ignored. "*" rules treated
+          # as repo-wide protection (everything human-only).
+          patterns = []
+          with open('.github/CODEOWNERS') as fp:
+              for line in fp:
+                  line = line.split('#', 1)[0].strip()
+                  if not line:
+                      continue
+                  toks = line.split()
+                  if toks:
+                      patterns.append(toks[0])
+
+          with open('/tmp/pr-files.txt') as fp:
+              files = [f.strip() for f in fp.read().splitlines() if f.strip()]
+
+          def matches(filepath, pattern):
+              # CODEOWNERS pattern rules (subset of gitignore):
+              # - Leading '/' anchors to repo root (which is implicit here).
+              # - Trailing '/' matches everything under the directory.
+              # - '*' (alone) matches every file.
+              # - Otherwise treat as a glob, with prefix matching for dirs.
+              p = pattern.lstrip('/')
+              if p in ('*', ''):
+                  return True
+              if p.endswith('/'):
+                  return filepath.startswith(p) or filepath == p.rstrip('/')
+              if fnmatch.fnmatch(filepath, p):
+                  return True
+              if filepath == p or filepath.startswith(p + '/'):
+                  return True
+              # Star-anywhere fallback for `**/foo` style entries.
+              if '**' in p and fnmatch.fnmatchcase(filepath, p.replace('**', '*')):
+                  return True
+              return False
+
+          hit = None
+          for f in files:
+              for p in patterns:
+                  if matches(f, p):
+                      hit = (f, p)
+                      break
+              if hit:
+                  break
+
+          out = os.environ['GITHUB_OUTPUT']
+          if hit:
+              f, p = hit
+              print(f'::notice::Tier 3 — PR touches CODEOWNERS path {p!r} via {f!r}. Skipping auto-merge.')
+              with open(out, 'a') as o:
+                  o.write('protected=true\n')
+          else:
+              with open(out, 'a') as o:
+                  o.write('protected=false\n')
+          PY
+
+      - name: Enable auto-merge
+        if: >-
+          steps.tier.outputs.decision == 'eligible'
+          && steps.protected.outputs.protected != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          actor='${{ github.actor }}'
+          label_set='${{ contains(github.event.pull_request.labels.*.name, 'auto-merge') }}'
+          if [ "$actor" = 'dependabot[bot]' ]; then
+            tier='Tier 1 (Dependabot ${{ steps.meta.outputs.update-type }})'
+          else
+            tier='Tier 2 (auto-merge label by ${{ github.event.sender.login }})'
+          fi
+          echo "$tier — enabling auto-merge."
+          gh pr merge --auto --squash "$PR_URL"
