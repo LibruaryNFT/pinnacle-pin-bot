@@ -1,0 +1,37 @@
+[Unit]
+OnFailure=discord-notify@%n.service
+Description=Pinnacle Pin Bot — Disney Pinnacle NFT sales Twitter bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nodeservices
+Group=nodeservices
+WorkingDirectory=/opt/pinnacle-pin-bot
+EnvironmentFile=/etc/gcp/env
+Environment=FLOW_ACCESS_NODE=https://mainnet.onflow.org
+Environment=FLOW_REST_ENDPOINT=https://rest-mainnet.onflow.org
+Environment=CHECK_INTERVAL_SECONDS=60
+Environment=HEALTH_PORT=8092
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /opt/pinnacle-pin-bot/start.js --live-tweets
+Restart=on-failure
+RestartSec=30
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=pinnacle-pin-bot
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pinnacle-pin-bot
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
