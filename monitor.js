@@ -9,6 +9,7 @@ const { TwitterApi } = require("twitter-api-v2");
 const { subscribeToEvents } = require("fcl-subscribe");
 const logger = require("./logger");
 const { renderSaleCard } = require("./render-card");
+const { computeHealthStatus } = require("./lib/helpers");
 
 /* ── File Logging Setup ─────────────────────────────────── */
 // Create log file with timestamp
@@ -916,14 +917,8 @@ const botStartTime = Date.now();
 http
   .createServer((req, res) => {
     if (req.url === "/health" && (req.method === "GET" || req.method === "HEAD")) {
-      const saleWithoutTweet =
-        lastSaleAttemptedAt !== null &&
-        (lastTweetAt === null ||
-          new Date(lastSaleAttemptedAt).getTime() > new Date(lastTweetAt).getTime());
-      const uptimeSeconds = Math.floor((Date.now() - botStartTime) / 1000);
-      const silentTooLong = config.ENABLE_TWEETS && lastTweetAt === null && uptimeSeconds > 3600;
       const body = JSON.stringify({
-        status: saleWithoutTweet || silentTooLong ? "degraded" : "healthy",
+        status: computeHealthStatus({ lastSaleAttemptedAt, lastTweetAt }),
         service: "pinnacle-pin-bot",
         uptime: Math.floor((Date.now() - botStartTime) / 1000),
         mode: config.IS_BACKFILL ? "backfill" : "live",
