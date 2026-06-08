@@ -5,7 +5,46 @@ import {
   unwrapAddressField,
   formatPrice,
   composeTweet,
+  computeHealthStatus,
 } from "../lib/helpers.js";
+
+describe("computeHealthStatus", () => {
+  it("idle bot (no qualifying sale, no tweet) is HEALTHY, not degraded", () => {
+    // Regression 2026-06-08: the old silentTooLong heuristic flagged this as
+    // degraded after 1h uptime -> Kuma "DOWN" -> false ntfy page.
+    expect(computeHealthStatus({ lastSaleAttemptedAt: null, lastTweetAt: null })).toBe("healthy");
+  });
+
+  it("qualifying sale recorded but never tweeted is DEGRADED (real fault)", () => {
+    expect(computeHealthStatus({ lastSaleAttemptedAt: "2026-06-08T17:00:00Z", lastTweetAt: null })).toBe(
+      "degraded",
+    );
+  });
+
+  it("sale tweeted (tweet newer than sale) is HEALTHY", () => {
+    expect(
+      computeHealthStatus({
+        lastSaleAttemptedAt: "2026-06-08T17:00:00Z",
+        lastTweetAt: "2026-06-08T17:00:05Z",
+      }),
+    ).toBe("healthy");
+  });
+
+  it("newer sale than last tweet is DEGRADED (latest qualifying sale untweeted)", () => {
+    expect(
+      computeHealthStatus({
+        lastSaleAttemptedAt: "2026-06-08T18:00:00Z",
+        lastTweetAt: "2026-06-08T17:00:00Z",
+      }),
+    ).toBe("degraded");
+  });
+
+  it("has tweeted before, no new sale pending is HEALTHY", () => {
+    expect(
+      computeHealthStatus({ lastSaleAttemptedAt: null, lastTweetAt: "2026-06-08T17:00:00Z" }),
+    ).toBe("healthy");
+  });
+});
 
 describe("extract", () => {
   it("returns primitives as-is", () => {
