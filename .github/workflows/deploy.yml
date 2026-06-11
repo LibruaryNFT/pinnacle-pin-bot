@@ -54,11 +54,19 @@ jobs:
             systemctl restart pinnacle-pin-bot
           '
 
-      - name: Health check
+      - name: Health check (status + SHA match)
+        env:
+          SHA: ${{ github.sha }}
         run: |
           sleep 10
-          ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} \
-            'curl -sf http://localhost:8092/health | python3 -m json.tool'
+          BODY=$(ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} \
+            'curl -sf http://localhost:8092/health')
+          echo "$BODY" | python3 -m json.tool
+          GOT_SHA=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sha',''))")
+          if [ "$GOT_SHA" != "$SHA" ]; then
+            echo "::error::running SHA ($GOT_SHA) != shipped $SHA — restart did not pick up new code"; exit 1
+          fi
+          echo "Verified: running SHA matches $SHA"
 
       - name: Cleanup SSH key
         if: always()
