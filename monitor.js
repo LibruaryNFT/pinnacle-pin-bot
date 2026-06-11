@@ -914,6 +914,20 @@ async function runLiveSubscription() {
 const HEALTH_PORT = Number(process.env.HEALTH_PORT || 8090);
 const botStartTime = Date.now();
 
+// Commit this process booted with, read ONCE at start. /health exposes it so
+// the deploy verifier + ops audit can prove source==deployed==running and
+// catch "deployed but never restarted".
+const GIT_SHA = (() => {
+  try {
+    return require("child_process")
+      .execSync("git rev-parse HEAD", { cwd: __dirname, timeout: 2000 })
+      .toString()
+      .trim();
+  } catch {
+    return "unknown";
+  }
+})();
+
 http
   .createServer((req, res) => {
     if (req.url === "/health" && (req.method === "GET" || req.method === "HEAD")) {
@@ -927,6 +941,7 @@ http
         tweetsSent,
         lastTweetAt,
         lastSaleAttemptedAt,
+        sha: GIT_SHA,
         timestamp: new Date().toISOString(),
       });
       res.writeHead(200, { "Content-Type": "application/json" });
