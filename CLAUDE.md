@@ -2,7 +2,7 @@
 
 ## Eco (formerly Command Center)
 
-This project is part of the LibruaryNFT agent network. Cross-repo coordination previously lived in the `command-center` repo; `command-center` is now archived and its docs/tooling live in the `eco` repo under `eco/intel/`.
+This project is part of the LibruaryNFT agent network. Cross-repo coordination previously lived in a since-archived companion repo; that repo's docs and tooling now live in the `eco` repo under `eco/intel/`.
 
 | Resource | Path |
 |----------|------|
