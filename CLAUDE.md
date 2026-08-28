@@ -1,26 +1,25 @@
 # Pinnacle Pin Bot
 
-## Command Center
+## Eco (formerly Command Center)
 
-This project is part of the LibruaryNFT agent network, coordinated by the command center at `c:\Code\command-center`.
+This project is part of the LibruaryNFT agent network. Cross-repo coordination previously lived in a since-archived companion repo; that repo's docs and tooling now live in the `eco` repo under `eco/intel/`.
 
 | Resource | Path |
 |----------|------|
-| Task list | `c:\Code\command-center\TODO.md` |
-| Deployment log | `c:\Code\command-center\deployments\log.md` |
-| Incident log | `c:\Code\command-center\incidents\log.md` |
-| Cost tracker | `c:\Code\command-center\costs\tracker.md` |
-| Agent registry | `c:\Code\command-center\agents\registry.md` |
-| Conventions | `c:\Code\command-center\CONVENTIONS.md` |
+| Deployment log | `eco/intel/deployments/log.md` |
+| Incident log | `eco/intel/incidents/log.md` |
+| Cost tracker | `eco/intel/costs/tracker.md` |
+| Agent registry | `eco/intel/agents/registry.md` |
+| Conventions | `eco/intel/quality/CONVENTIONS.md` |
 
 **Bug tracking:** Use `report_bug` MCP tool for cross-repo bugs. Creates SQLite record + event log + optional GitHub Issue.
 
-**Session start:** Read this repo's CLAUDE.md (especially Current Status). Check TODO.md for active tasks.
+**Session start:** Read this repo's CLAUDE.md (especially Current Status). Task tracking is via GitHub Issues on this repo.
 
 **After completing work:**
 1. Update this repo's **Current Status** section below (milestones, what's next)
-2. Update command center files: mark TODOs done, log deployments, log incidents
-3. Follow commit format and conventions in `c:\Code\command-center\CONVENTIONS.md`
+2. Update eco: log deployments, log incidents
+3. Follow commit format and conventions in `eco/intel/quality/CONVENTIONS.md`
 
 ## Current Status
 
@@ -102,7 +101,7 @@ node preview-cards.js
 - Runs on Vaultopolis VPS (46.225.59.82) as a systemd service
 - Deploy path: `/opt/pinnacle-pin-bot`
 - Shares VPS with flow-event-listener and other services
-- See `c:\Code\command-center\infrastructure\hetzner\vps-vaultopolis.md` for VPS details
+- See `eco/intel/infrastructure/hetzner/vps-vaultopolis.md` for VPS details
 
 ## Deployment
 
