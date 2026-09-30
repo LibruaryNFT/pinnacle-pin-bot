@@ -38,7 +38,7 @@ jobs:
       )
     steps:
       - name: Checkout (for CODEOWNERS read)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.pull_request.base.ref }}
 
