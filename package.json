@@ -31,7 +31,7 @@
     "@onflow/fcl": "^1.21.11",
     "axios": "^1.20.0",
     "canvas": "^3.2.3",
-    "dotenv": "^17.4.1",
+    "dotenv": "^18.0.3",
     "fcl-subscribe": "^0.1.9",
     "node-fetch": "^2.7.0",
     "pino": "^10.3.1",
