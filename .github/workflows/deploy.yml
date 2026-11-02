@@ -71,3 +71,119 @@ jobs:
       - name: Cleanup SSH key
         if: always()
         run: rm -f ~/.ssh/deploy_key
+
+  # THE FUSE (2026-11-02, roadmap step 3). A deploy that fails its health check
+  # prepares its own rollback and pages, instead of leaving vps1 in an unknown
+  # state behind a red run nobody reads.
+  #
+  # The gap this closes: the Deploy step has already done `git pull`,
+  # `npm install`, `cp` of the systemd unit and `systemctl restart` by the time
+  # the health check runs. If the SHA does not match, the bot is ALREADY on the
+  # new code and the run just goes red. There was no notification of any kind in
+  # this workflow, and this bot's failure mode is silence — it posts to
+  # @PinnaclePinBot on a schedule, so a dead process looks exactly like a quiet
+  # day on the Pinnacle market.
+  #
+  # Scoped to `needs.deploy.result == 'failure'`, not failure(), because a red
+  # `test` job skips deploy, nothing reached the host, and reverting there would
+  # revert a commit that was never live.
+  #
+  # A PR rather than a push: main is protected with strict required checks, so a
+  # direct push of the revert is rejected by the API, and a fuse whose mechanism
+  # cannot fire is theatre. Merging the PR re-triggers this workflow, which
+  # `git pull`s the revert onto vps1.
+  #
+  # Zero steady-state cost: this job does not run on a green deploy.
+  fuse:
+    name: Prepare rollback and page
+    needs: [test, deploy]
+    if: ${{ always() && needs.deploy.result == 'failure' && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Open a revert PR for the commit that failed verification
+        id: revert
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BAD_SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          branch="revert/deploy-fuse-${BAD_SHA:0:7}"
+
+          # A squash merge leaves one parent and reverts plainly; a true merge
+          # commit has two and needs -m 1. Pick by parent count rather than
+          # assuming a shape, because both exist in this history.
+          parents=$(git rev-list --parents -n1 "$BAD_SHA" | wc -w)
+          git switch -c "$branch"
+          if [ "$parents" -gt 2 ]; then
+            git revert --no-edit -m 1 "$BAD_SHA" || { echo "::error::revert -m 1 conflicted; roll back by hand"; exit 1; }
+          else
+            git revert --no-edit "$BAD_SHA" || { echo "::error::revert conflicted; roll back by hand"; exit 1; }
+          fi
+          git push -u origin "$branch"
+
+          url=$(gh pr create \
+            --base main --head "$branch" \
+            --title "revert: deploy fuse tripped on ${BAD_SHA:0:7}" \
+            --body "$(cat <<BODY
+          The Deploy workflow's health check FAILED for \`${BAD_SHA}\`, so vps1 is in an
+          unknown state. The deploy step pulls, installs, copies the systemd unit and
+          restarts \`pinnacle-pin-bot\` BEFORE the health check runs, so the new code may
+          well be live and not serving.
+
+          This revert was opened automatically by the deploy fuse. It has not been
+          merged. Merging it re-runs this workflow, which pulls the revert onto vps1
+          and restarts the bot.
+
+          | Field | Value |
+          |---|---|
+          | Failed run | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |
+          | Commit | \`${BAD_SHA}\` |
+          | Opened | $(date -u '+%Y-%m-%dT%H:%M:%SZ') |
+
+          Read the failed run before merging. If the health check failed for a reason
+          outside this commit, close this PR rather than merging it.
+          BODY
+          )" 2>&1 | tail -1) || true
+          echo "pr=$url" >> "$GITHUB_OUTPUT"
+          echo "opened: $url"
+
+      - name: Page
+        if: always()
+        env:
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          set -uo pipefail
+          if [ -z "${NTFY_TOPIC:-}" ]; then
+            echo "::error::NTFY_TOPIC is not set, so this failure cannot page anyone."
+            exit 1
+          fi
+          body="Deploy health check failed on ${GITHUB_SHA:0:7}. vps1 state unknown, the bot may be down.
+          Rollback PR: ${{ steps.revert.outputs.pr }}
+          Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 \
+            -X POST "https://ntfy.sh/${NTFY_TOPIC}" \
+            -H "Title: Pinnacle pin bot deploy fuse tripped" \
+            -H "Priority: urgent" \
+            -H "Tags: rotating_light" \
+            -d "$body" || true)
+          code=${code:-000}
+          echo "ntfy HTTP $code"
+          # Fail the step on a non-2xx rather than swallowing it. An alert path
+          # that reports success when the message was dropped is the thing this
+          # whole job exists to avoid, and ntfy's free tier does hit a daily
+          # quota (it dropped four CRITICAL alerts on 2026-05-02). A red step
+          # here is the signal that the page did not land.
+          case "$code" in
+            2*) echo "paged" ;;
+            *) echo "::error::ntfy returned $code — this failure did NOT page anyone."; exit 1 ;;
+          esac
