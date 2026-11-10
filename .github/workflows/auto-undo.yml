@@ -1,11 +1,11 @@
 name: Auto-undo
 
-# COPY of LibruaryNFT/shared-workflows .github/workflows/auto-undo.yml at
-# 13fae1e. Do not edit here: change the shared file and its scenario tests
-# (tests/auto-undo-test.sh there), then copy it over. It is copied rather than
-# called because this repo is public and a public repo cannot call a workflow
-# in a private one (devalpha-mcp's CI has failed at startup, 0 jobs, since
-# 2026-08 for exactly that reason).
+# COPY of LibruaryNFT/shared-workflows .github/workflows/auto-undo.yml as of
+# shared-workflows#11. Do not edit here: change the shared file and its
+# scenario tests (tests/auto-undo-test.sh there), then copy it over. It is
+# copied rather than called because this repo is public and a public repo
+# cannot call a workflow in a private one (devalpha-mcp's CI failed at
+# startup, 0 jobs, on every run from 2026-08-15 for exactly that reason).
 
 # WHAT THIS DOES
 #
@@ -142,12 +142,25 @@ jobs:
           case "$RESULT" in
             success)
               if [ "$IS_DRILL" = true ]; then echo "drill run passed its check; nothing to mark"; exit 0; fi
-              if gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
-                gh api -X PATCH "repos/$REPO/git/refs/tags/$TAG" -f sha="$SHA" -F force=true >/dev/null
+              # GitHub refuses (403) to point a ref at a commit whose workflow
+              # files differ from the default branch tip when the caller is the
+              # built-in token, which can never hold `workflows` permission.
+              # Seen 2026-11-10 in a public repo moving the tag back one commit
+              # (pinnacle-pin-bot run 42882328086); two private repos allowed the
+              # same move. It hits undo runs and deploys of an older commit. A
+              # refusal leaves the tag on an older commit that also passed, so a
+              # later undo goes back further than needed but still to a healthy
+              # version: warn, do not fail a deploy that passed its check.
+              CUR=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)
+              if [ "$CUR" = "$SHA" ]; then
+                echo "$TAG is already on $SHORT"
+              elif [ -n "$CUR" ] && gh api -X PATCH "repos/$REPO/git/refs/tags/$TAG" -f sha="$SHA" -F force=true >/dev/null; then
+                echo "Marked $SHORT as $TAG"
+              elif [ -z "$CUR" ] && gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null; then
+                echo "Marked $SHORT as $TAG"
               else
-                gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
+                echo "::warning::GitHub refused to move $TAG to $SHORT (likely: its workflow files differ from the tip of the default branch). $TAG stays on ${CUR:0:7}."
               fi
-              echo "Marked $SHORT as $TAG"
               if [ "$IS_UNDO" != true ]; then
                 n=$(open_issue)
                 if [ -n "$n" ]; then
