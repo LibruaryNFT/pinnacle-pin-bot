@@ -107,7 +107,9 @@ jobs:
           # A run exists and FAILED. Dispatching another would re-run a known
           # failure on a schedule and bill for it four times a day. A failing
           # deploy is a thing to fix, not to retry, and the deploy workflow's
-          # own fuse has already paged and prepared the rollback.
+          # auto-undo job has already rolled back to the last healthy commit
+          # and paged. (That undo run is a success on this same tip, so the
+          # check above normally exits OK before reaching here.)
           #
           # Only `failure` holds. `cancelled`, `timed_out`, `stale` and
           # `action_required` all fall through to a dispatch on purpose: those
