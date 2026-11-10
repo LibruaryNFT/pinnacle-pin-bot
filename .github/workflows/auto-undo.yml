@@ -1,7 +1,7 @@
 name: Auto-undo
 
 # COPY of LibruaryNFT/shared-workflows .github/workflows/auto-undo.yml as of
-# shared-workflows#11. Do not edit here: change the shared file and its
+# shared-workflows#12. Do not edit here: change the shared file and its
 # scenario tests (tests/auto-undo-test.sh there), then copy it over. It is
 # copied rather than called because this repo is public and a public repo
 # cannot call a workflow in a private one (devalpha-mcp's CI failed at
@@ -152,6 +152,11 @@ jobs:
               # later undo goes back further than needed but still to a healthy
               # version: warn, do not fail a deploy that passed its check.
               CUR=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)
+              # On a 404 gh prints the error body on stdout, so a missing tag
+              # reads as a non-empty string. Seen 2026-11-10: the first deploy in
+              # flow-evm-indexer (run 42890905938) tried to move a tag that did
+              # not exist instead of creating it.
+              [[ "$CUR" =~ ^[0-9a-f]{40}$ ]] || CUR=""
               if [ "$CUR" = "$SHA" ]; then
                 echo "$TAG is already on $SHORT"
               elif [ -n "$CUR" ] && gh api -X PATCH "repos/$REPO/git/refs/tags/$TAG" -f sha="$SHA" -F force=true >/dev/null; then
