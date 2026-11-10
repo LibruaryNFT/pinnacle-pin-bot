@@ -1,7 +1,7 @@
 name: Auto-undo
 
 # COPY of LibruaryNFT/shared-workflows .github/workflows/auto-undo.yml as of
-# shared-workflows#11. Do not edit here: change the shared file and its
+# shared-workflows#12. Do not edit here: change the shared file and its
 # scenario tests (tests/auto-undo-test.sh there), then copy it over. It is
 # copied rather than called because this repo is public and a public repo
 # cannot call a workflow in a private one (devalpha-mcp's CI failed at
@@ -25,7 +25,9 @@ name: Auto-undo
 #                            come back.
 #   cannot undo safely       No known-good commit yet, or the change includes a
 #                            database migration (code rolled back under a
-#                            migrated schema can be worse than the bad deploy).
+#                            migrated schema can be worse than the bad deploy):
+#                            a path matching `block_paths`, or, when the caller
+#                            sets `block_diff`, a changed line matching it.
 #                            Pages urgently instead of guessing.
 #
 # WHY
@@ -85,6 +87,14 @@ on:
         required: false
         type: string
         default: '(^|/)(migrations?|alembic)/|\.sql$'
+      block_diff:
+        description: >-
+          Regex (jq/Oniguruma, case-insensitive). If an added or removed line in the
+          change matches, page instead of undoing. For schema changes kept in
+          application code, which no path can match. Blank = off
+        required: false
+        type: string
+        default: ''
     secrets:
       NTFY_TOPIC:
         required: false
@@ -111,6 +121,7 @@ jobs:
           IS_UNDO: ${{ inputs.is_undo }}
           IS_DRILL: ${{ inputs.is_drill }}
           BLOCK: ${{ inputs.block_paths }}
+          BLOCK_DIFF: ${{ inputs.block_diff }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: |
           set -euo pipefail
@@ -152,6 +163,11 @@ jobs:
               # later undo goes back further than needed but still to a healthy
               # version: warn, do not fail a deploy that passed its check.
               CUR=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)
+              # On a 404 gh prints the error body on stdout, so a missing tag
+              # reads as a non-empty string. Seen 2026-11-10: the first deploy in
+              # flow-evm-indexer (run 42890905938) tried to move a tag that did
+              # not exist instead of creating it.
+              [[ "$CUR" =~ ^[0-9a-f]{40}$ ]] || CUR=""
               if [ "$CUR" = "$SHA" ]; then
                 echo "$TAG is already on $SHORT"
               elif [ -n "$CUR" ] && gh api -X PATCH "repos/$REPO/git/refs/tags/$TAG" -f sha="$SHA" -F force=true >/dev/null; then
@@ -187,8 +203,20 @@ jobs:
           fi
 
           if [ "$HEALTHY" != "$SHA" ]; then
-            CHANGED=$(gh api "repos/$REPO/compare/${HEALTHY}...${SHA}" --jq '.files[].filename')
-            HITS=$(printf '%s\n' "$CHANGED" | grep -E -- "$BLOCK" || true)
+            COMPARE=$(gh api "repos/$REPO/compare/${HEALTHY}...${SHA}")
+            HITS=$(printf '%s' "$COMPARE" | jq -r '.files[].filename' | grep -E -- "$BLOCK" || true)
+            if [ -n "${BLOCK_DIFF:-}" ]; then
+              # Only added/removed lines count. A file GitHub returns no diff
+              # for (too large, binary) counts as a match: unseen is not safe.
+              DIFF_HITS=$(printf '%s' "$COMPARE" | jq -r --arg re "$BLOCK_DIFF" '.files[]
+                | select(.patch == null or ([.patch | splits("\n") | select(test("^[-+]")) | select(test($re; "i"))] | length > 0))
+                | .filename')
+              HITS=$(printf '%s\n%s\n' "$HITS" "$DIFF_HITS" | grep -v '^$' | sort -u || true)
+            fi
+            # compare returns at most 300 files, so past that the guard is blind
+            if [ "$(printf '%s' "$COMPARE" | jq '.files | length')" -ge 300 ]; then
+              HITS=$(printf '%s\n%s' "$HITS" "(300 or more files changed; not all could be checked)" | grep -v '^$')
+            fi
             if [ -n "$HITS" ]; then
               page urgent "Update ${SHORT} failed its health check. Not rolled back automatically because it includes a database change. ${RUN_URL}"
               # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
