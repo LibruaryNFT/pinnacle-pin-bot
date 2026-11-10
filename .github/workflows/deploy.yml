@@ -5,6 +5,22 @@ on:
     branches: [main, master]
     paths-ignore: ['*.md', 'docs/**', 'LICENSE', '.gitignore']
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Commit to deploy (blank = tip of main). Set by auto-undo to go back to the last healthy commit'
+        required: false
+        default: ''
+        type: string
+      undo:
+        description: 'Set by auto-undo: this run is a rollback'
+        required: false
+        default: false
+        type: boolean
+      drill:
+        description: 'Fire drill: fail on purpose after a passing health check, to prove auto-undo works'
+        required: false
+        default: false
+        type: boolean
 
 concurrency:
   group: deploy
@@ -15,6 +31,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.ref || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: '20'
@@ -28,9 +46,21 @@ jobs:
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 10
+    env:
+      # The exact commit this run ships: the pushed commit, or the one auto-undo
+      # asked for. The host checks it is on main before resetting to it.
+      TARGET: ${{ inputs.ref || github.sha }}
     steps:
+      - name: Refuse anything that is not a full commit SHA
+        run: |
+          if ! [[ "$TARGET" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::ref must be a full 40-character commit SHA, got: $TARGET"; exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@v7
+        with:
+          ref: ${{ env.TARGET }}
 
       - name: Setup SSH
         run: |
@@ -41,33 +71,75 @@ jobs:
 
       - name: Deploy
         run: |
-          ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} '
-            git config --global --add safe.directory /opt/pinnacle-pin-bot &&
-            cd /opt/pinnacle-pin-bot &&
-            git reset --hard HEAD &&
-            git pull origin main &&
-            chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot &&
-            npm install --production &&
-            chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot &&
-            cp /opt/pinnacle-pin-bot/deploy/pinnacle-pin-bot.service /etc/systemd/system/pinnacle-pin-bot.service &&
-            systemctl daemon-reload &&
+          ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} "bash -s -- $TARGET" <<'ENDSSH'
+            set -euo pipefail
+            TARGET="$1"
+            git config --global --add safe.directory /opt/pinnacle-pin-bot
+            cd /opt/pinnacle-pin-bot
+            git fetch --quiet origin main
+            # Only ever a commit that is on main, so a rollback can go back but
+            # never sideways onto an unmerged branch.
+            if ! git merge-base --is-ancestor "$TARGET" origin/main; then
+              echo "ABORT: $TARGET is not on main"; exit 1
+            fi
+            # reset --hard also discards the package-lock.json that the last
+            # `npm install` rewrote, as the old `reset --hard HEAD` did.
+            git reset --hard "$TARGET"
+            chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot
+            npm install --production
+            chown -R nodeservices:nodeservices /opt/pinnacle-pin-bot
+            cp /opt/pinnacle-pin-bot/deploy/pinnacle-pin-bot.service /etc/systemd/system/pinnacle-pin-bot.service
+            systemctl daemon-reload
             systemctl restart pinnacle-pin-bot
-          '
+          ENDSSH
 
       - name: Health check (status + SHA match)
-        env:
-          SHA: ${{ github.sha }}
         run: |
-          sleep 10
-          BODY=$(ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} \
-            'curl -sf http://localhost:8092/health')
-          echo "$BODY" | python3 -m json.tool
-          GOT_SHA=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sha',''))")
-          if [ "$GOT_SHA" != "$SHA" ]; then
-            echo "::error::running SHA ($GOT_SHA) != shipped $SHA — restart did not pick up new code"; exit 1
-          fi
-          echo "Verified: running SHA matches $SHA"
+          # Up to a minute. A single try after 10 s was fine when a failed check
+          # only turned the run red; now a failed check rolls the deploy back,
+          # so a slow start must not count as a bad deploy.
+          for i in $(seq 1 10); do
+            sleep 6
+            BODY=$(ssh -p 2222 -i ~/.ssh/deploy_key root@${{ secrets.VAULTOPOLIS_VPS_HOST }} \
+              'curl -sf http://localhost:8092/health' || true)
+            GOT_SHA=$(printf '%s' "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin).get('sha',''))" 2>/dev/null || true)
+            if [ "$GOT_SHA" = "$TARGET" ]; then
+              printf '%s' "$BODY" | python3 -m json.tool
+              echo "Verified: running SHA matches $TARGET (try $i)"
+              exit 0
+            fi
+            echo "try $i: running SHA '${GOT_SHA}', want $TARGET"
+          done
+          echo "::error::running SHA (${GOT_SHA:-none}) != shipped $TARGET after 10 tries"; exit 1
+
+      - name: Fire drill fails here on purpose
+        if: inputs.drill == true
+        run: |
+          echo "::warning::Fire drill: the health check passed, failing on purpose so auto-undo rolls back."
+          exit 1
 
       - name: Cleanup SSH key
         if: always()
         run: rm -f ~/.ssh/deploy_key
+
+  # When the deploy above fails its health check, put the last version that
+  # passed back on the server, page, and open one issue. When it passes, record
+  # this commit as the last healthy one. Details: auto-undo.yml in this folder.
+  auto-undo:
+    needs: [deploy]
+    if: always() && github.event_name != 'pull_request' && needs.deploy.result != 'skipped'
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+    uses: ./.github/workflows/auto-undo.yml
+    with:
+      service: pinnacle-pin-bot
+      deploy_workflow: deploy.yml
+      branch: main
+      deploy_result: ${{ needs.deploy.result }}
+      deployed_sha: ${{ inputs.ref || github.sha }}
+      is_undo: ${{ inputs.undo == true }}
+      is_drill: ${{ inputs.drill == true }}
+    secrets:
+      NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}

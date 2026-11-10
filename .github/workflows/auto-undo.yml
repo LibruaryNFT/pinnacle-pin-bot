@@ -1,0 +1,191 @@
+name: Auto-undo
+
+# COPY of LibruaryNFT/shared-workflows .github/workflows/auto-undo.yml at
+# 13fae1e. Do not edit here: change the shared file and its scenario tests
+# (tests/auto-undo-test.sh there), then copy it over. It is copied rather than
+# called because this repo is public and a public repo cannot call a workflow
+# in a private one (devalpha-mcp's CI has failed at startup, 0 jobs, since
+# 2026-08 for exactly that reason).
+
+# WHAT THIS DOES
+#
+# Called as the last job of a deploy workflow, after that workflow's own
+# post-deploy health check. It does one of four things:
+#
+#   deploy passed            Moves the `deployed-healthy` tag to the commit that
+#                            just passed, and closes any open auto-undo issue
+#                            (unless this run was itself an undo, because then
+#                            the bad commit is still on the branch).
+#   deploy failed            Redeploys the commit under `deployed-healthy` by
+#                            dispatching the same deploy workflow with
+#                            `ref=<that sha>` and `undo=true`, then opens or
+#                            updates one issue so the cause gets fixed.
+#   an undo run failed       Does not try again. Pages urgently: the service
+#                            may be down and the known-good version did not
+#                            come back.
+#   cannot undo safely       No known-good commit yet, or the change includes a
+#                            database migration (code rolled back under a
+#                            migrated schema can be worse than the bad deploy).
+#                            Pages urgently instead of guessing.
+#
+# WHY
+#
+# Nobody reads the code that agents merge, so the safety net has to be the
+# running system: a version that fails its health check does not stay live.
+# 2026-11-10 inventory: 9 deploy pipelines run a health check after deploy and
+# none of them could go back to the previous version on their own.
+#
+# CALLER CONTRACT
+#
+# The deploy workflow must:
+#   - accept workflow_dispatch inputs `ref` (string, blank = branch tip),
+#     `undo` (boolean) and `drill` (boolean);
+#   - deploy exactly `inputs.ref || github.sha`, refusing any commit that is
+#     not on the branch;
+#   - fail its deploy job when the health check fails (and, when `drill` is
+#     true, fail on purpose after a passing check);
+#   - grant this job actions: write, contents: write, issues: write.
+# Example: templates/call-auto-undo.yml.
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: 'Human name of the service, used in alerts and the issue title'
+        required: true
+        type: string
+      deploy_workflow:
+        description: 'File name of the calling deploy workflow, e.g. deploy.yml'
+        required: true
+        type: string
+      branch:
+        description: 'Branch the deploy workflow ships from'
+        required: true
+        type: string
+      deploy_result:
+        description: 'needs.<deploy job>.result'
+        required: true
+        type: string
+      deployed_sha:
+        description: 'The full commit SHA this run tried to deploy'
+        required: true
+        type: string
+      is_undo:
+        description: 'True when this run was dispatched by auto-undo'
+        required: false
+        type: boolean
+        default: false
+      is_drill:
+        description: 'True for a fire drill (the deploy failed on purpose)'
+        required: false
+        type: boolean
+        default: false
+      block_paths:
+        description: 'Extended regex. If the change touches a matching path, page instead of undoing'
+        required: false
+        type: string
+        default: '(^|/)(migrations?|alembic)/|\.sql$'
+    secrets:
+      NTFY_TOPIC:
+        required: false
+
+jobs:
+  auto-undo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: write
+      contents: write
+      issues: write
+    steps:
+      - name: Mark healthy, or undo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVICE: ${{ inputs.service }}
+          WORKFLOW: ${{ inputs.deploy_workflow }}
+          BRANCH: ${{ inputs.branch }}
+          RESULT: ${{ inputs.deploy_result }}
+          SHA: ${{ inputs.deployed_sha }}
+          IS_UNDO: ${{ inputs.is_undo }}
+          IS_DRILL: ${{ inputs.is_drill }}
+          BLOCK: ${{ inputs.block_paths }}
+          NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
+        run: |
+          set -euo pipefail
+          TAG=deployed-healthy
+          TITLE="Auto-undo: ${SERVICE} update failed its health check"
+          DRILL=""
+          [ "$IS_DRILL" = true ] && DRILL="[fire drill] "
+
+          page() { # priority, message
+            if [ -z "${NTFY_TOPIC:-}" ]; then echo "::warning::no NTFY_TOPIC, alert not sent: $2"; return 0; fi
+            curl -fsS -m 10 -H "Title: ${DRILL}${SERVICE}" -H "Priority: $1" -d "${DRILL}$2" \
+              "https://ntfy.sh/${NTFY_TOPIC}" >/dev/null || echo "::warning::ntfy send failed"
+          }
+          open_issue() { # exact title match on open issues, no search index lag
+            gh issue list -R "$REPO" --state open --limit 200 --json number,title \
+              --jq ".[] | select(.title == \"$TITLE\") | .number" | head -1
+          }
+          note_issue() { # body
+            local n; n=$(open_issue)
+            if [ -n "$n" ]; then gh issue comment "$n" -R "$REPO" --body "$1" >/dev/null
+            else gh issue create -R "$REPO" --title "$TITLE" --body "$1" >/dev/null; fi
+          }
+
+          if ! [[ "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::deployed_sha is not a full commit SHA: $SHA"; exit 1
+          fi
+          SHORT=${SHA:0:7}
+
+          case "$RESULT" in
+            success)
+              if [ "$IS_DRILL" = true ]; then echo "drill run passed its check; nothing to mark"; exit 0; fi
+              if gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+                gh api -X PATCH "repos/$REPO/git/refs/tags/$TAG" -f sha="$SHA" -F force=true >/dev/null
+              else
+                gh api -X POST "repos/$REPO/git/refs" -f ref="refs/tags/$TAG" -f sha="$SHA" >/dev/null
+              fi
+              echo "Marked $SHORT as $TAG"
+              if [ "$IS_UNDO" != true ]; then
+                n=$(open_issue)
+                if [ -n "$n" ]; then
+                  gh issue close "$n" -R "$REPO" --comment "Closed by the deploy check: $SHORT passed its health check on $BRANCH. $RUN_URL" >/dev/null
+                  echo "Closed #$n"
+                fi
+              fi
+              exit 0 ;;
+            failure) ;;
+            *) echo "Deploy result is '$RESULT'; nothing to do"; exit 0 ;;
+          esac
+
+          if [ "$IS_UNDO" = true ]; then
+            page urgent "Rolling back to ${SHORT} also failed its health check. The service may be down and needs a look. ${RUN_URL}"
+            note_issue "The automatic rollback to \`$SHA\` failed its own health check. Not retrying. Run: $RUN_URL"
+            exit 1
+          fi
+
+          HEALTHY=$(gh api "repos/$REPO/git/ref/tags/$TAG" --jq .object.sha 2>/dev/null || true)
+          if ! [[ "$HEALTHY" =~ ^[0-9a-f]{40}$ ]]; then
+            page urgent "Update ${SHORT} failed its health check and there is no known-good version recorded yet, so it was not rolled back. ${RUN_URL}"
+            note_issue "Deploy of \`$SHA\` failed its health check. Not rolled back: no \`$TAG\` tag exists yet. Run: $RUN_URL"
+            exit 1
+          fi
+
+          if [ "$HEALTHY" != "$SHA" ]; then
+            CHANGED=$(gh api "repos/$REPO/compare/${HEALTHY}...${SHA}" --jq '.files[].filename')
+            HITS=$(printf '%s\n' "$CHANGED" | grep -E -- "$BLOCK" || true)
+            if [ -n "$HITS" ]; then
+              page urgent "Update ${SHORT} failed its health check. Not rolled back automatically because it includes a database change. ${RUN_URL}"
+              # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
+              note_issue "$(printf 'Deploy of `%s` failed its health check. Not rolled back: the change since `%s` touches database paths:\n\n```\n%s\n```\n\nRun: %s' "$SHA" "$HEALTHY" "$HITS" "$RUN_URL")"
+              exit 1
+            fi
+          fi
+
+          gh workflow run "$WORKFLOW" -R "$REPO" --ref "$BRANCH" -f ref="$HEALTHY" -f undo=true
+          echo "Dispatched $WORKFLOW with ref=$HEALTHY undo=true"
+          page low "Update ${SHORT} failed its health check. Rolling back to ${HEALTHY:0:7} automatically. ${RUN_URL}"
+          # shellcheck disable=SC2016 # backticks are Markdown, not command substitution
+          note_issue "$(printf '%sDeploy of `%s` failed its health check, so `%s` (the last version that passed) is being redeployed.\n\nThe bad commit is still on `%s`. This issue closes itself when a normal deploy passes its check.\n\nRun: %s' "$DRILL" "$SHA" "$HEALTHY" "$BRANCH" "$RUN_URL")"
