@@ -23,13 +23,20 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, labeled, ready_for_review]
 
-permissions:
-  contents: write
-  pull-requests: write
+permissions: {}
+
+# Serialize per PR, never cancel: cancelling a mutating call mid-flight is
+# worse than queueing it.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
 
 jobs:
   evaluate:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     if: >-
       !github.event.pull_request.draft
       && (
@@ -38,14 +45,14 @@ jobs:
       )
     steps:
       - name: Checkout (for CODEOWNERS read)
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.ref }}
 
       - name: Fetch Dependabot metadata
         id: meta
         if: github.actor == 'dependabot[bot]'
-        uses: dependabot/fetch-metadata@v2
+        uses: dependabot/fetch-metadata@21025c705c08248db411dc16f3619e6b5f9ea21a # v2.5.0
 
       - name: Decide tier
         id: tier

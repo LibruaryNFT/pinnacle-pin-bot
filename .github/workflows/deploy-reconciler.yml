@@ -59,10 +59,7 @@ on:
     - cron: "37 */6 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: read
-  # To read deploy.yml's runs and to dispatch one. Nothing else.
-  actions: write
+permissions: {}
 
 concurrency:
   group: deploy-reconciler
@@ -73,6 +70,10 @@ jobs:
     name: Does main's tip have a deploy run
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      # To read deploy.yml's runs and to dispatch one. Nothing else.
+      actions: write
     steps:
       - name: Dispatch deploy for main if its tip has none
         env:

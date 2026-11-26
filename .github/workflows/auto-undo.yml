@@ -99,6 +99,8 @@ on:
       NTFY_TOPIC:
         required: false
 
+permissions: {}
+
 jobs:
   auto-undo:
     runs-on: ubuntu-latest
