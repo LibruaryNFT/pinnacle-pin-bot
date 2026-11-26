@@ -5,6 +5,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
 
       # Group patch bumps into one PR (less noise); minor/major stay
@@ -19,6 +21,8 @@ updates:
     schedule:
       interval: "weekly"
       day: "monday"
+    cooldown:
+      default-days: 7
     open-pull-requests-limit: 5
       # Group patch bumps into one PR (less noise); minor/major stay
       # individual so the auto-merge workflow can classify each.
